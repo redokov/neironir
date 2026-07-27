@@ -36,6 +36,12 @@ asyncio_mode = "auto"
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+extend-exclude = [
+    "privacy-filter",
+    "frontend",
+    "storage",
+    "docs",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
@@ -44,3 +50,4 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 python_version = "3.11"
 strict = true
 files = ["backend/neironir"]
+exclude = ["privacy-filter/.*"]
