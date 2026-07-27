@@ -5,9 +5,11 @@ from __future__ import annotations
 import logging
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from neironir.api import jobs, ui
 from neironir.api.dependencies import get_privacy, get_settings, get_storage
+from neironir.config import Settings
 
 
 def create_app() -> FastAPI:
@@ -24,10 +26,15 @@ def create_app() -> FastAPI:
     app.include_router(ui.router)
     app.include_router(jobs.router)
 
+    # Serve the frontend's static assets (CSS, JS). The ``index.html``
+    # itself is served by ``ui.router`` at ``GET /`` so it can be
+    # resolved relative to the configured ``frontend_dir``.
+    settings = get_settings()
+    _mount_static(app, settings)
+
     # Touch the dependency factories so misconfiguration (e.g. an
     # invalid privacy_filter_mode) surfaces at startup time rather than
     # on the first request. Storage construction is cheap.
-    settings = get_settings()
     get_storage(settings=settings)
     get_privacy(settings=settings)
 
@@ -38,6 +45,18 @@ def create_app() -> FastAPI:
         logging.basicConfig(level=settings.log_level)
 
     return app
+
+
+def _mount_static(app: FastAPI, settings: Settings) -> None:
+    """Mount the frontend static directory if it exists.
+
+    The directory may be absent during isolated backend test runs
+    (e.g. when running unit tests in CI). In that case we skip the
+    mount rather than fail application construction.
+    """
+    frontend_dir = settings.frontend_path
+    if frontend_dir.is_dir():
+        app.mount("/static", StaticFiles(directory=frontend_dir), name="static")
 
 
 app = create_app()

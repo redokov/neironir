@@ -1,0 +1,172 @@
+/* neironir — minimal SPA styles */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+  color: #0f172a;
+  background: #f8fafc;
+}
+
+.container {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 16px;
+}
+
+h1 {
+  font-size: 28px;
+  margin: 16px 0 8px;
+}
+
+.lead {
+  margin: 0 0 24px;
+  color: #475569;
+}
+
+.card {
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  border-radius: 8px;
+  padding: 24px;
+  margin-bottom: 16px;
+}
+
+.card h2 {
+  font-size: 20px;
+  margin: 0 0 16px;
+}
+
+.dropzone {
+  border: 2px dashed #cbd5e1;
+  padding: 48px;
+  text-align: center;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  background: #ffffff;
+  color: #0f172a;
+}
+
+.dropzone:hover,
+.dropzone:focus,
+.dropzone--active {
+  background: #eff6ff;
+  border-color: #2563eb;
+  outline: none;
+}
+
+.dropzone p {
+  margin: 8px 0;
+}
+
+.hint {
+  color: #64748b;
+  font-size: 14px;
+}
+
+.link-button {
+  background: none;
+  border: none;
+  padding: 0;
+  color: #2563eb;
+  cursor: pointer;
+  text-decoration: underline;
+  font: inherit;
+}
+
+.link-button:hover {
+  color: #1d4ed8;
+}
+
+.button {
+  display: inline-block;
+  padding: 8px 16px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #0f172a;
+  cursor: pointer;
+  font-size: 14px;
+  font-family: inherit;
+  text-decoration: none;
+  line-height: 1.4;
+}
+
+.button:hover {
+  background: #f1f5f9;
+}
+
+.button.primary {
+  background: #2563eb;
+  color: #ffffff;
+  border-color: #2563eb;
+}
+
+.button.primary:hover {
+  background: #1d4ed8;
+  border-color: #1d4ed8;
+}
+
+.actions {
+  margin-top: 16px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.job-info {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+  margin: 0;
+}
+
+.job-info dt {
+  color: #475569;
+  font-weight: 500;
+}
+
+.job-info dd {
+  margin: 0;
+  color: #0f172a;
+}
+
+.error {
+  color: #dc2626;
+  background: #fef2f2;
+  padding: 8px 12px;
+  border-radius: 4px;
+  margin-top: 12px;
+}
+
+@media (max-width: 600px) {
+  .container {
+    padding: 12px;
+  }
+
+  .card {
+    padding: 16px;
+  }
+
+  .dropzone {
+    padding: 32px 16px;
+  }
+
+  .actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .actions .button {
+    text-align: center;
+  }
+}

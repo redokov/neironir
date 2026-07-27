@@ -1,6 +1,36 @@
 <!doctype html>
-<html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <title>neironir</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
   <body>
-    <h1>neironir</h1>
+    <main class="container">
+      <h1>neironir</h1>
+      <p class="lead">Удаление персональных данных из документов перед отправкой в нейросеть.</p>
+
+      <section id="upload-section" class="card">
+        <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Выберите файл">
+          <p>Перетащите файл сюда или <button type="button" id="pick" class="link-button">выберите</button></p>
+          <p class="hint">.md или .docx, до 20 МБ</p>
+          <input id="file-input" type="file" accept=".md,.docx" hidden>
+        </div>
+      </section>
+
+      <section id="job-section" class="card" hidden>
+        <h2>Задача</h2>
+        <dl class="job-info">
+          <dt>Имя файла</dt><dd id="job-filename">—</dd>
+          <dt>Статус</dt><dd id="job-status">—</dd>
+        </dl>
+        <div class="actions">
+          <a id="download" class="button primary" href="#" download hidden>Скачать очищенный файл</a>
+          <button type="button" id="reset" class="button">Загрузить ещё</button>
+        </div>
+        <p id="error" class="error" hidden></p>
+      </section>
+    </main>
+    <script src="/static/app.js" defer></script>
   </body>
 </html>
