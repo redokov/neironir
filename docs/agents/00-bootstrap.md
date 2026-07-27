@@ -60,7 +60,12 @@ backend/
   - Эндпоинт `GET /api/v1/health` → `{"status": "ok"}`.
   - Подключение CORS — пока **не нужно**, UI раздаётся с того же origin.
 
-> **Решение по структуре:** пакет `neironir` лежит в `backend/neironir/`, не в корне. Чтобы `uvicorn backend.neironir.main:app` работал, а `uv run uvicorn ...` находил модуль, в `pyproject.toml` настроить `[tool.hatch.build.targets.wheel] packages = ["backend/neironir"]` (если используем hatch backend) **или** поставить sys.path через `tool.uv` / `tool.pytest` (`pythonpath = ["backend"]`). Согласованный вариант: **`pythonpath = ["backend"]`** — проще, не зависит от build-бэкенда.
+> **Решение по структуре:** пакет `neironir` лежит в `backend/neironir/`, не в корне. Чтобы приложение запускалось через `uv run uvicorn neironir.main:app` (а не только через `uvicorn backend.neironir.main:app`), в `pyproject.toml` нужны **оба** механизма:
+>
+> 1. **`[tool.hatch.build.targets.wheel] packages = ["backend/neironir"]`** — без этого `uv sync` собирает «пустой» дистрибутив, в `site-packages` нет пакета `neironir`, и `from neironir.main import create_app` падает с `ModuleNotFoundError`. `uv run` кладёт в `sys.path` только `.venv/lib/.../site-packages`, корень проекта туда не попадает.
+> 2. **`[tool.pytest.ini_options] pythonpath = ["backend"]`** — для pytest (он читает свою конфигурацию независимо от `sys.path` после editable-установки).
+>
+> Оба блока обязательны. Только `pythonpath` недостаточно для `uv run uvicorn`; только `hatch.build.targets.wheel` достаточно для рантайма, но не для pytest без `pythonpath`.
 
 ### 3. `pyproject.toml`: раздел `[tool.pytest.ini_options]`
 
@@ -70,6 +75,16 @@ pythonpath = ["backend"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 ```
+
+> Плюс build-блок (см. выше):
+> ```toml
+> [build-system]
+> requires = ["hatchling"]
+> build-backend = "hatchling.build"
+>
+> [tool.hatch.build.targets.wheel]
+> packages = ["backend/neironir"]
+> ```
 
 ### 4. `pyproject.toml`: разделы `[tool.ruff]` и `[tool.mypy]`
 
