@@ -24,16 +24,26 @@
 - Markdown (`.md`)
 - Microsoft Word (`.docx`)
 
-## Структура (планируется)
+## Структура
 
 ```
 neironir/
-├── backend/        # FastAPI-приложение
-├── frontend/       # Веб-интерфейс
-├── privacy-filter/ # Сабмодуль с моделью
-└── docs/           # Проектная документация
+├── backend/
+│   └── neironir/
+│       ├── __init__.py
+│       ├── main.py            # FastAPI app factory
+│       └── config.py          # pydantic-settings
+├── tests/                     # pytest
+├── docs/                      # Проектная документация
+├── pyproject.toml             # uv/PEP 621
+├── uv.lock
+├── .gitignore
+├── .python-version
+└── README.md
 ```
+
+> Полная структура (с `frontend/`, `privacy-filter/`, подкаталогами `backend/`) — в [docs/architecture.md](./docs/architecture.md).
 
 ## Статус
 
-Проект в стадии инициализации.
+Фаза 0 (bootstrap) завершена. См. [docs/agents/00-bootstrap.md](./docs/agents/00-bootstrap.md).

@@ -69,8 +69,8 @@ class DocumentConverter(Protocol):
 ```python
 @dataclass(frozen=True)
 class Replacement:
-    start: int        # inclusive, по тексту
-    end: int          # exclusive, по тексту
+    start: int  # inclusive, по тексту
+    end: int  # exclusive, по тексту
     entity_type: EntityType
     placeholder: str  # уже сформированный шаблон, например "<PRIVATE_PERSON1>"
 ```
