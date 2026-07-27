@@ -130,7 +130,153 @@ class Replacement:
 
 ## 3. Адаптер privacy-filter — `backend/neironir/privacy/client.py`
 
-Это **заглушка + контракт**. Реальный вызов — **после** завершения фазы 1; в этой фазе используем **mock-режим** для разработки и тестов.
+### 3.0. Интеграция с privacy-filter (контракт вызова)
+
+Контракт зафиксирован по результатам исследования
+([`privacy-filter-research.md`](./privacy-filter-research.md)). Решение — **CLI-subprocess**;
+Python API остаётся как запасной вариант (см. раздел «Принятое решение» в
+research-файле).
+
+**Способ вызова:** `asyncio.create_subprocess_exec` с бинарём `opf` (или
+`python -m opf`), вход — через **временный файл** (`-f`), выход — JSON из stdout.
+
+```python
+import asyncio
+import json
+import tempfile
+from pathlib import Path
+
+from opf import OPF  # для type hints не обязателен; реальный путь — CLI
+
+async def annotate_text(
+    text: str,
+    *,
+    opf_cmd: list[str],                 # ["opf"] или ["python", "-m", "op"]
+    checkpoint_dir: Path | None,       # или None — тогда берётся OPF_CHECKPOINT / ~/.opf/privacy_filter
+    device: str = "cpu",                # на MVP-сервере без GPU
+    timeout_s: float = 120.0,           # NEIRONIR_PRIVACY_FILTER_TIMEOUT
+) -> list[dict]:
+    """Вернуть список спанов: [{"label": str, "start": int, "end": int, "text": str}, ...]."""
+    cmd = list(opf_cmd)
+    cmd += ["--format", "json", "--output-mode", "typed",
+            "--decode-mode", "viterbi", "--device", device]
+    if checkpoint_dir is not None:
+        cmd += ["--checkpoint", str(checkpoint_dir)]
+
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".txt", encoding="utf-8", delete=False
+    ) as tmp:
+        tmp.write(text)
+        tmp_path = Path(tmp.name)
+    cmd += ["-f", str(tmp_path)]
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout_b, stderr_b = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout_s
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            raise PrivacyFilterError(f"opf timeout after {timeout_s}s")
+        if proc.returncode != 0:
+            raise PrivacyFilterError(
+                f"opf exited {proc.returncode}: {stderr_b.decode('utf-8', 'replace')}"
+            )
+
+        payload = json.loads(stdout_b.decode("utf-8"))
+        # payload["schema_version"] должен быть 1; иначе — ошибка версии.
+        if payload.get("schema_version") != 1:
+            raise PrivacyFilterError(
+                f"unexpected schema_version={payload.get('schema_version')!r}"
+            )
+        # Берём только нужные поля; placeholder из выхода НЕ используем —
+        # нумерация делается в domain/placeholder.py по spec архитектуры.
+        spans = [
+            {
+                "label":  s["label"],
+                "start":  int(s["start"]),
+                "end":    int(s["end"]),
+                "text":   s["text"],
+            }
+            for s in payload.get("detected_spans", [])
+        ]
+        # Валидация: каждая метка должна быть в нашем 8-типовом EntityType.
+        # Неизвестные — логируем и отбрасываем (защита от смены таксономии v2→v4/v7).
+        return _filter_known_labels(spans)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+```
+
+**Тонкости, зафиксированные в исследовании:**
+
+1. **Вход — временный файл, не stdin.** `opf` при чтении из пайпа разбивает
+   вход по `\n` и шлёт каждую строку отдельным запросом (`opf/_cli/args.py`,
+   `iter_inputs`). Для многострочных документов это сломает контракт. `-f`
+   читает файл целиком — корректный путь.
+2. **`--output-mode typed` обязателен.** В режиме `redacted` все метки
+   схлопываются в одну `redacted` — мы потеряем типы. CLI-флаг продублирован
+   в `cmd` явно, чтобы случайно не словить дефолт.
+3. **`placeholder` из вывода модели не используем.** Модель отдаёт
+   `<PRIVATE_PERSON>` без номера, а архитектура требует `<PRIVATE_PERSON1>`,
+   `<PRIVATE_PERSON2>`, … со сквозной нумерацией по документу. Нумерация — в
+   `domain/placeholder.py` (фаза 2), адаптер возвращает только `label`+`start`+`end`+`text`.
+4. **stderr — отдельно.** `opf` пишет summary-строку (латентность) и лог
+   скачивания чекпойнта в stderr. **Читаем только stdout.** stderr при желании
+   можно прокинуть в `logger.debug` основного backend.
+5. **Таймаут через `asyncio.wait_for`.** На CPU один документ на десятки
+   страниц обрабатывается десятки секунд. Стартовое значение
+   `NEIRONIR_PRIVACY_FILTER_TIMEOUT=120`; уточняется по замерам в фазе 5.
+6. **Чекпойнт.** Не прокидываем `--checkpoint`, если `OPF_CHECKPOINT`/дефолт
+   уже корректно настроены в окружении backend. Путь монтируется в контейнер
+   один раз, не на каждый запрос.
+7. **Валидация меток.** Набор строк жёстко проверяется против
+   `EntityType.__members__`. Всё, что вне — логируется и отбрасывается. Это
+   страховка от смены таксономии `v2` → `v4`/`v7` в будущих релизах
+   чекпойнта на Hugging Face.
+
+**Структура модуля** `backend/neironir/privacy/client.py`:
+
+```python
+class PrivacyFilterError(Exception): ...
+
+@dataclass(frozen=True)
+class EntitySpan:
+    start: int
+    end: int
+    entity_type: EntityType   # маппинг из строки opf через EntityType(label)
+    text: str                 # диагностика; в формировании placeholder не участвует
+
+class PrivacyFilterClient(Protocol):
+    async def annotate(self, text: str) -> list[EntitySpan]: ...
+
+
+class SubprocessPrivacyFilterClient:
+    def __init__(self, *, opf_cmd: list[str], checkpoint_dir: Path | None,
+                 device: str, timeout_s: float): ...
+    async def annotate(self, text: str) -> list[EntitySpan]:
+        # реализация по шаблону выше
+        ...
+
+# Заглушка для разработки — regex-эвристики на email/phone/url/date/account_number/secret
+# (см. раздел 3.1 ниже).
+class MockPrivacyFilterClient: ...
+```
+
+**Зависимости `pyproject.toml` (опциональная группа `ml`):** в фазе 3 **не
+добавляем**. ML-стек (`torch`, `safetensors`, `tiktoken`, `huggingface_hub`,
+`numpy`) ставится **внутри** venv, в котором запускается `opf` — это окружение
+нашего **subprocess**, не основного backend. Основной backend остаётся
+лёгким. Группу `[dependency-groups] ml` (или `[project.optional-dependencies] ml`)
+добавляем только если/когда перейдём на in-process Python API; до тех пор
+держимся CLI-subprocess.
+
+### 3.1. Заглушка `MockPrivacyFilterClient`
 
 ```python
 class PrivacyFilterClient(Protocol):
@@ -162,16 +308,7 @@ class EntitySpan:
 
 ### `SubprocessPrivacyFilterClient`
 
-- Шаблон (наполняется в фазе 1):
-  - команда из `settings.privacy_filter_cmd` (`NEIRONIR_PRIVACY_FILTER_CMD`),
-  - текст через stdin или временный файл — что выберет исследование,
-  - stdout — JSON со списком `EntitySpan`,
-  - `asyncio.create_subprocess_exec` + `communicate()` с `timeout=settings.privacy_filter_timeout`,
-  - парсинг результата, маппинг строковых типов в `EntityType` (с проверкой, что каждая строка — допустимый тип).
-- Если вывод пуст — отдаём `[]`.
-- Ошибки выполнения (ненулевой код, таймаут, невалидный JSON, неизвестный тип) → `PrivacyFilterError`.
-
-> **В этой фазе** в `main.py` подключаем `MockPrivacyFilterClient` по умолчанию. `SubprocessPrivacyFilterClient` создаём как **заготовку** с `raise NotImplementedError` в `annotate()`, и в `main.py` переключение через `settings.privacy_filter_mode` (`mock` | `subprocess`).
+Контракт и реализация — в разделе [3.0](#30-интеграция-с-privacy-filter-контракт-вызова) выше. В `main.py` подключаем по умолчанию `MockPrivacyFilterClient` (для разработки и тестов), `SubprocessPrivacyFilterClient` — через `settings.privacy_filter_mode` (`mock` | `subprocess`).
 
 ## 4. Пайплайн — `backend/neironir/workers/pipeline.py`
 
@@ -276,7 +413,6 @@ CORS — **не добавляем**, фронт с того же origin.
 ## Вне scope
 
 - UI-код (фаза 4).
-- Реальный `SubprocessPrivacyFilterClient` (после фазы 1, но в этой фазе — заглушка; фактическое подключение — фаза 3.1 / 5, если потребуется).
 - Тесты производительности.
 - Логирование в файл / структурное логирование (допустимо `logging.basicConfig` на этом этапе; structlog — фаза 5+).
 
