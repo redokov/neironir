@@ -45,6 +45,11 @@ extend-exclude = [
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
+# B008 trips on FastAPI's ``Depends(...)`` / ``File(...)`` /
+# ``BackgroundTasks(...)`` defaults — the framework's documented
+# dependency-injection pattern is exactly this syntax, so we silence
+# it here.
+extend-ignore = ["B008"]
 
 [tool.mypy]
 python_version = "3.11"
