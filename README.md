@@ -84,6 +84,7 @@ CI: GitHub Actions, см. `.github/workflows/ci.yml`.
 
 ## Документация
 
+- [docs/acceptance-criteria.md](./docs/acceptance-criteria.md) — полный чек-лист для проверки (13 разделов: статика, тесты, mock, subprocess, ошибки, CI, ограничения).
 - [docs/quickstart.md](./docs/quickstart.md) — установка, запуск, частые ошибки.
 - [docs/api.md](./docs/api.md) — описание эндпоинтов (`/api/v1/documents`), коды ошибок, конфигурация.
 - [docs/architecture.md](./docs/architecture.md) — поток данных, ограничения MVP.
