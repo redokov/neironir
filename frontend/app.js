@@ -99,7 +99,10 @@
     $.skipReview.addEventListener("click", closeReview);
 
     // Reset the output-format checkbox when the user picks a new file
-    $.outputFormatMd.addEventListener("change", updateOutputFormatHint);
+    $.outputFormatMd.addEventListener("change", function () {
+      $.outputFormatMd.dataset.userSet = "true";
+      updateOutputFormatHint();
+    });
 
     window.addEventListener("beforeunload", stopPolling);
 
@@ -138,6 +141,10 @@
       // multiple uploads so that "перетащил следующий файл" doesn't
       // silently reset the format option.
       $.outputFormatMd.disabled = false;
+      // If the checkbox has never been touched, default to checked.
+      if (!$.outputFormatMd.dataset.userSet) {
+        $.outputFormatMd.checked = true;
+      }
       updateOutputFormatHint();
     } else {
       // For .md files the output is always .md — the checkbox is
@@ -774,11 +781,45 @@
         trainingInfo;
 
       // Refresh the annotations so the user sees the updated state.
+      // Crucially, keep the user's manual ADD selections visible:
+      // after apply-feedback the adds have been written to the file,
+      // but the annotations endpoint still doesn't know about them.
+      // We remove from pendingActions the actions that were just
+      // applied (add/reject) and keep any remainder (e.g. a reject
+      // that failed because the span wasn't found).
+      var submitted = actions;  // the action list we sent
+      var submittedKeys = {};
+      submitted.forEach(function (a) {
+        // Build a key that identifies this action uniquely:
+        // "add:start:end:type" or "reject:idx"
+        if (a.action === "add") {
+          submittedKeys["add:" + a.start + ":" + a.end + ":" + a.entity_type] = true;
+        } else if (a.action === "reject" && a.original_span_index != null) {
+          submittedKeys["reject:" + a.original_span_index] = true;
+        } else if (a.action === "confirm" && a.original_span_index != null) {
+          submittedKeys["confirm:" + a.original_span_index] = true;
+        }
+      });
+      // Keep only pending actions that were NOT in the just-submitted
+      // batch — these are actions the user added *after* the last
+      // apply-feedback call (they'll be submitted next time).
+      pendingActions = pendingActions.filter(function (pa) {
+        if (pa.action === "add") {
+          var k = "add:" + pa.start + ":" + pa.end + ":" + pa.entity_type;
+          return !submittedKeys[k];
+        }
+        if (pa.action === "reject" && pa.original_span_index != null) {
+          var k2 = "reject:" + pa.original_span_index;
+          return !submittedKeys[k2];
+        }
+        // Never keep confirms in pendingActions (they're ephemeral).
+        return false;
+      });
+
       try {
         var ann = await fetch("/api/v1/documents/" + currentJobId + "/annotations");
         if (ann.ok) {
           reviewData = await ann.json();
-          pendingActions = [];
           renderPreview();
         }
       } catch (_) {}

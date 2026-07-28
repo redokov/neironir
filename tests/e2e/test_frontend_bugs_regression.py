@@ -230,9 +230,54 @@ class TestJavaScriptPatches:
         assert 'id="output-format-md"' in html
         assert 'class="checkbox"' in html
 
+    def test_checkbox_defaults_to_checked_for_docx(self, app_js: str) -> None:
+        """Bug fix: the checkbox must default to checked for docx
+        so users don't forget to enable MD conversion. The default
+        is guarded by dataset.userSet."""
+        match = re.search(
+            r"function showUploadOptions\(ext\) \{.*?\n  \}",
+            app_js,
+            re.DOTALL,
+        )
+        assert match is not None
+        body = match.group(0)
+        assert '$.outputFormatMd.checked = true' in body, (
+            "showUploadOptions does not default to checked"
+        )
+        assert 'dataset.userSet' in body, (
+            "missing dataset.userSet guard"
+        )
+
+    def test_apply_feedback_keeps_pending_actions(self, app_js: str) -> None:
+        """Bug fix: after apply-feedback, pendingActions must not
+        be cleared with = [] – that wipes manual ADD spans."""
+        # The marker comment just before the filter code must exist.
+        assert "// Keep only pending actions that were NOT" in app_js
+        assert "pendingActions.filter" in app_js
+
+        # The function ``addEntity`` still has a legitimate
+        # ``pendingActions = []`` in a different context — that's
+        # fine.  We just need to make sure the
+        # ``applyFeedbackToFile`` function body does NOT have a
+        # standalone ``pendingActions = [];``.
+        # Extract the applyFeedbackToFile function body.
+        af_match = re.search(
+            r"async function applyFeedbackToFile\(\) \{.*?\n  \}",
+            app_js,
+            re.DOTALL,
+        )
+        assert af_match is not None, "applyFeedbackToFile not found"
+        af_body = af_match.group(0)
+        # Old bug pattern: a standalone ``pendingActions = [];``
+        # anywhere in this function.
+        assert "pendingActions = []" not in af_body, (
+            "applyFeedbackToFile still uses = [] to clear "
+            "pendingActions — manual ADD spans will disappear"
+        )
+
 
 # ---------------------------------------------------------------------------
-# 3. End-to-end with a real browser (Playwright)
+# 4. End-to-end with a real browser (Playwright)
 # ---------------------------------------------------------------------------
 
 
@@ -358,7 +403,81 @@ def _wait_for_upload(page) -> str:
     )
 
 
-# ----- Bug 1: checkbox survives a file drop ------------------------------
+# ----- Bug 1a: checkbox defaults to checked for .docx files ----------
+
+
+class TestOutputFormatDefaultChecked:
+    def test_checkbox_is_checked_by_default_for_docx(
+        self, live_server: str, tmp_path: Path
+    ) -> None:
+        """The 'Результат в MD-формате' checkbox must be checked by
+        default when the page loads, so users don't forget to enable
+        markdown conversion for .docx files."""
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            try:
+                page = browser.new_context().new_page()
+                page.goto(live_server)
+
+                # After uploading a .docx, the checkbox should appear
+                # and be checked by default.
+                first_path = tmp_path / "first.docx"
+                _make_docx_bytes(
+                    first_path,
+                    ["Email: user@example.com"],
+                )
+                page.set_input_files("#file-input", str(first_path))
+                page.wait_for_selector("#download:not([hidden])", timeout=10_000)
+                assert page.is_checked("#output-format-md"), (
+                    "checkbox should default to checked for docx"
+                )
+            finally:
+                browser.close()
+
+    def test_checkbox_stays_checked_after_upload(
+        self, live_server: str, tmp_path: Path
+    ) -> None:
+        """When the user uploads a second file, the checkbox stays
+        checked (the user's preference is preserved)."""
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            try:
+                page = browser.new_context().new_page()
+                page.goto(live_server)
+
+                # Upload first docx — checkbox should be auto-checked.
+                first_path = tmp_path / "a.docx"
+                _make_docx_bytes(
+                    first_path,
+                    ["Email: a@example.com"],
+                )
+                page.set_input_files("#file-input", str(first_path))
+                page.wait_for_selector("#download:not([hidden])", timeout=10_000)
+                assert page.is_checked("#output-format-md"), (
+                    "default check failed on first upload"
+                )
+
+                # Upload a second docx — checkbox must still be checked.
+                page.click("#reset")
+                second_path = tmp_path / "b.docx"
+                _make_docx_bytes(
+                    second_path,
+                    ["Email: b@example.com"],
+                )
+                page.set_input_files("#file-input", str(second_path))
+                page.wait_for_selector("#download:not([hidden])", timeout=10_000)
+                assert page.is_checked("#output-format-md"), (
+                    "checkbox lost checked state after second upload"
+                )
+            finally:
+                browser.close()
+
+
+# ----- Bug 1b: checkbox survives a file drop ------------------------------
 
 
 class TestOutputFormatCheckboxSurvivesDrop:
@@ -440,9 +559,10 @@ class TestMockModeBanner:
     def test_real_pipeline_redacts_email(
         self, live_server: str, tmp_path: Path
     ) -> None:
-        """End-to-end: a docx uploaded with email goes through the
-        mock and the resulting download is a docx whose text no
-        longer contains the email."""
+        """End-to-end: a docx uploaded defaults to md output
+        (checkbox is now checked by default). The mock mode
+        redacts email — the downloaded markdown must contain
+        the placeholder and not the original email."""
         from playwright.sync_api import sync_playwright
 
         with sync_playwright() as pw:
@@ -450,16 +570,16 @@ class TestMockModeBanner:
             try:
                 page = browser.new_context().new_page()
                 page.goto(live_server)
+                first_path = tmp_path / "first.docx"
+                _make_docx_bytes(
+                    first_path,
+                    ["Email: user@example.com"],
+                )
                 page.set_input_files(
-                    "#file-input", str(_make_docx_path(tmp_path))
+                    "#file-input", str(first_path)
                 )
                 page.wait_for_selector("#download:not([hidden])", timeout=10_000)
 
-                # The mock mode redacts email even though it doesn't
-                # know about names — this is what the user sees and
-                # why "никаких изменений" was confusing: they expected
-                # names to be replaced too.  With the banner in place
-                # they understand what was actually redacted.
                 href = page.eval_on_selector(
                     "#download", "el => el.getAttribute('href')"
                 )
@@ -467,15 +587,14 @@ class TestMockModeBanner:
 
                 r = httpx.get(live_server + href, timeout=5.0)
                 assert r.status_code == 200
-                # Persist the download so we can inspect with python-docx.
-                out = tmp_path / "result.docx"
-                out.write_bytes(r.content)
-                from docx import Document
-
-                paragraphs = [p.text for p in Document(str(out)).paragraphs]
-                joined = "\n".join(paragraphs)
-                assert "user@example.com" not in joined
-                assert "<PRIVATE_EMAIL1>" in joined
+                body = r.text
+                # The markdown output must have the placeholder.
+                assert "<PRIVATE_EMAIL1>" in body, (
+                    "email was not redacted — pipeline may have "
+                    "returned the original text"
+                )
+                # Original email must be gone.
+                assert "user@example.com" not in body
             finally:
                 browser.close()
 
