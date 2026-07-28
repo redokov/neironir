@@ -217,6 +217,69 @@ def build_training_dataset(storage_dir: Path, output_dir: Path) -> TrainingDatas
     )
 
 
+def append_job_feedback_to_dataset(
+    job_dir: Path,
+    dataset_path: Path,
+) -> int:
+    """Append the ADD actions from ``job_dir/feedback.json`` to ``dataset_path``.
+
+    Used by the ``POST /api/v1/documents/{id}/apply-feedback`` endpoint
+    so that user corrections flow into the training set **immediately**,
+    without waiting for the admin to click "Запустить дообучение".
+
+    Args:
+        job_dir: Per-job storage directory that contains
+            ``feedback.json`` and ``extracted_text.txt``.
+        dataset_path: Path to the cumulative ``feedback_dataset.jsonl``
+            file.  The function creates the parent directory if needed
+            and appends one JSONL line per ADD action.
+
+    Returns:
+        Number of records appended.  Zero is a valid result when the
+        user only confirmed/rejected detected spans (no new signal for
+        the model).
+    """
+    feedback_path = job_dir / "feedback.json"
+    text_path = job_dir / "extracted_text.txt"
+    if not (feedback_path.is_file() and text_path.is_file()):
+        return 0
+
+    try:
+        feedback = json.loads(feedback_path.read_text(encoding="utf-8"))
+        text = text_path.read_text(encoding="utf-8")
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("append_job_feedback_to_dataset: unreadable %s: %s", feedback_path, exc)
+        return 0
+
+    dataset_path.parent.mkdir(parents=True, exist_ok=True)
+    appended = 0
+
+    # Buffer records in memory and write them out only if at least
+    # one ADD action produced a valid record — this avoids creating
+    # an empty dataset file when the user only confirmed / rejected
+    # detected spans (no new signal for the model).
+    pending_records: list[str] = []
+    for action in feedback.get("actions", []):
+        if action.get("action") != "add":
+            continue
+        start = int(action.get("start", -1))
+        end = int(action.get("end", -1))
+        etype = action.get("entity_type", "unknown")
+        if start < 0 or end <= start or end > len(text):
+            continue
+        record = {
+            "text": text,
+            "spans": [{"start": start, "end": end, "label": etype}],
+        }
+        pending_records.append(json.dumps(record, ensure_ascii=False) + "\n")
+        appended += 1
+
+    if pending_records:
+        with dataset_path.open("a", encoding="utf-8") as out:
+            out.writelines(pending_records)
+    return appended
+
+
 # ---------------------------------------------------------------------------
 # Subprocess control
 # ---------------------------------------------------------------------------
@@ -423,17 +486,108 @@ async def start_training_from_feedback(
 ) -> TrainingState:
     """High-level helper used by the HTTP endpoint.
 
-    Builds the dataset from feedback, then delegates to
-    :func:`start_training`.  If the dataset is empty the state is
-    flipped to ``FAILED`` and the helper returns immediately without
-    spawning a subprocess.
+    Combines two sources of training data:
+
+    * the cumulative JSONL written incrementally by
+      ``POST /apply-feedback`` (one record per user ADD action);
+    * the freshly-built JSONL from :func:`build_training_dataset`
+      which scans every ``feedback.json`` for ADD actions (covers
+      the case where the user only called ``POST /feedback`` and
+      never used the apply-feedback button).
+
+    Records are deduplicated by ``(text, start, end, label)`` so a
+    single ADD action never lands in the dataset twice.  If the
+    combined dataset is empty the state is flipped to ``FAILED`` and
+    no subprocess is spawned.
     """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    combined_path = output_dir / "combined_dataset.jsonl"
+
+    seen: set[tuple[str, int, int, str]] = set()
+    combined_count = 0
+    combined_by_type: dict[str, int] = {}
+
+    def _append(record: dict) -> None:
+        nonlocal combined_count
+        spans = record.get("spans", [])
+        if not spans:
+            return
+        span = spans[0]
+        key = (
+            record.get("text", ""),
+            int(span.get("start", 0)),
+            int(span.get("end", 0)),
+            str(span.get("label", "")),
+        )
+        if key in seen:
+            return
+        seen.add(key)
+        with combined_path.open("a", encoding="utf-8") as out:
+            out.write(json.dumps(record, ensure_ascii=False) + "\n")
+        combined_count += 1
+        label = str(span.get("label", "unknown"))
+        combined_by_type[label] = combined_by_type.get(label, 0) + 1
+
+    # 1) Drain the cumulative file written by apply-feedback.
+    cumulative_path = (
+        storage_dir / "checkpoints" / CUMULATIVE_DATASET_NAME
+    )
+    if cumulative_path.is_file():
+        try:
+            with cumulative_path.open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        _append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+        except OSError as exc:
+            logger.warning("cannot read cumulative dataset %s: %s", cumulative_path, exc)
+
+    # 2) Append any fresh ADD actions from feedback.json files
+    #    that the user never routed through apply-feedback.
+    #
+    # ``build_training_dataset`` always writes to
+    # ``<output_dir>/feedback_dataset.jsonl`` — the file name is
+    # fixed.  That's fine here: we read it back into the combined
+    # stream, then delete it so the only file the trainer sees is
+    # ``combined_path``.
     try:
-        summary = build_training_dataset(storage_dir, output_dir)
-    except FileNotFoundError as exc:
+        build_training_dataset(storage_dir, output_dir)
+    except FileNotFoundError:
+        # No fresh feedback — that's fine.
+        pass
+
+    fresh_path = output_dir / "feedback_dataset.jsonl"
+    if fresh_path != combined_path and fresh_path.is_file():
+        try:
+            with fresh_path.open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        _append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+        finally:
+            try:
+                fresh_path.unlink()
+            except OSError:
+                pass
+
+    if combined_count == 0:
         _STATE.status = TrainingStatus.FAILED
-        _STATE.error = str(exc)
+        _STATE.error = "no ADD actions in feedback"
         return _STATE
+
+    summary = TrainingDatasetSummary(
+        path=combined_path,
+        record_count=combined_count,
+        by_entity_type=combined_by_type,
+    )
 
     spec = TrainingCommandSpec(
         opf_cmd=opf_cmd,
@@ -450,12 +604,20 @@ async def start_training_from_feedback(
 LOG_TAIL_MAX: int = 50
 
 
+# Path of the cumulative training dataset that
+# ``POST /apply-feedback`` writes to.  Lives under
+# ``<storage>/checkpoints/`` so the admin's "Запустить дообучение"
+# button can find it without configuration.
+CUMULATIVE_DATASET_NAME = "training_dataset.jsonl"
+
+
 __all__ = [
     "TrainingCommandSpec",
     "TrainingDatasetSummary",
     "TrainingProgress",
     "TrainingState",
     "TrainingStatus",
+    "append_job_feedback_to_dataset",
     "build_training_dataset",
     "get_training_state",
     "reset_training_state",

@@ -759,11 +759,19 @@
         return;
       }
       $.applySuccess.hidden = false;
+      var trainingInfo = "";
+      if (body.training_records_added > 0) {
+        trainingInfo =
+          " Добавлено " +
+          body.training_records_added +
+          " записей в датасет для обучения модели.";
+      }
       $.applySuccess.textContent =
         "Правки применены к итоговому файлу: " +
         body.added + " добавлено, " +
         body.rejected + " отклонено, " +
-        body.kept + " подтверждено.";
+        body.kept + " подтверждено." +
+        trainingInfo;
 
       // Refresh the annotations so the user sees the updated state.
       try {

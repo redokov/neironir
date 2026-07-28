@@ -374,3 +374,165 @@ class TestApplyFeedbackEndpoint:
         content = result_path.read_text(encoding="utf-8")
         assert "user@example.com" in content
         assert "<PRIVATE_EMAIL" not in content
+
+
+class TestApplyFeedbackTrainingDataset:
+    """``POST /apply-feedback`` must stream ADD actions into the
+    cumulative training dataset so the model can learn from the user's
+    corrections **without** waiting for the next admin "Запустить
+    дообучение" run.
+    """
+
+    def test_add_action_appends_record_to_training_dataset(
+        self, client_and_storage: tuple[TestClient, Path]
+    ) -> None:
+        client, storage_dir = client_and_storage
+        r = client.post(
+            "/api/v1/documents/",
+            files={"file": ("doc.md", b"user@example.com", "text/markdown")},
+        )
+        job_id = r.json()["id"]
+        _wait_completed(client, job_id)
+
+        # Add a new placeholder for a phone (offset 14..16 maps to
+        # plain "om" text in the original source).
+        payload = {
+            "actions": [
+                {
+                    "action": "add",
+                    "start": 14,
+                    "end": 16,
+                    "entity_type": "private_phone",
+                    "text": "om",
+                }
+            ],
+            "comment": None,
+        }
+        r2 = client.post(f"/api/v1/documents/{job_id}/apply-feedback", json=payload)
+        assert r2.status_code == 200
+        body = r2.json()
+        assert body["training_records_added"] == 1
+        assert body["training_dataset_path"] is not None
+
+        dataset_path = Path(body["training_dataset_path"])
+        assert dataset_path.is_file()
+        lines = dataset_path.read_text(encoding="utf-8").strip().splitlines()
+        assert len(lines) == 1
+        record = json.loads(lines[0])
+        assert record["text"] == "user@example.com"
+        assert record["spans"] == [
+            {"start": 14, "end": 16, "label": "private_phone"}
+        ]
+
+    def test_reject_only_action_adds_nothing(
+        self, client_and_storage: tuple[TestClient, Path]
+    ) -> None:
+        client, storage_dir = client_and_storage
+        r = client.post(
+            "/api/v1/documents/",
+            files={"file": ("doc.md", b"user@example.com", "text/markdown")},
+        )
+        job_id = r.json()["id"]
+        _wait_completed(client, job_id)
+
+        payload = {
+            "actions": [
+                {
+                    "action": "reject",
+                    "start": 0,
+                    "end": 16,
+                    "entity_type": "private_email",
+                    "text": "user@example.com",
+                    "original_span_index": 0,
+                }
+            ],
+            "comment": None,
+        }
+        r2 = client.post(f"/api/v1/documents/{job_id}/apply-feedback", json=payload)
+        assert r2.status_code == 200
+        body = r2.json()
+        # Reject does not add new training signal — the counter is 0.
+        # The dataset path is still returned so the UI can show the
+        # user where future corrections would land.
+        assert body["training_records_added"] == 0
+        assert body["training_dataset_path"] is not None
+
+        # And the file itself must not be created when nothing was
+        # appended.
+        dataset_path = Path(body["training_dataset_path"])
+        assert not dataset_path.exists()
+
+    def test_multiple_apply_feedback_calls_accumulate_records(
+        self, client_and_storage: tuple[TestClient, Path]
+    ) -> None:
+        client, storage_dir = client_and_storage
+        first_job = client.post(
+            "/api/v1/documents/",
+            files={"file": ("a.md", b"user@example.com", "text/markdown")},
+        ).json()["id"]
+        _wait_completed(client, first_job)
+
+        second_job = client.post(
+            "/api/v1/documents/",
+            files={"file": ("b.md", b"admin@example.org", "text/markdown")},
+        ).json()["id"]
+        _wait_completed(client, second_job)
+
+        for job_id, target in [
+            (first_job, "user@example.com"),
+            (second_job, "admin@example.org"),
+        ]:
+            payload = {
+                "actions": [
+                    {
+                        "action": "add",
+                        "start": 0,
+                        "end": len(target),
+                        "entity_type": "private_phone",
+                        "text": target,
+                    }
+                ],
+                "comment": None,
+            }
+            client.post(f"/api/v1/documents/{job_id}/apply-feedback", json=payload)
+
+        # The cumulative JSONL must contain both records, in order.
+        dataset_path = storage_dir / "checkpoints" / "training_dataset.jsonl"
+        assert dataset_path.is_file()
+        records = [
+            json.loads(line)
+            for line in dataset_path.read_text(encoding="utf-8").strip().splitlines()
+        ]
+        assert len(records) == 2
+        assert records[0]["text"] == "user@example.com"
+        assert records[1]["text"] == "admin@example.org"
+
+    def test_dataset_path_is_returned_even_when_no_records_added(
+        self, client_and_storage: tuple[TestClient, Path]
+    ) -> None:
+        """Frontend can show the path even when nothing was written."""
+        client, _ = client_and_storage
+        r = client.post(
+            "/api/v1/documents/",
+            files={"file": ("doc.md", b"user@example.com", "text/markdown")},
+        )
+        job_id = r.json()["id"]
+        _wait_completed(client, job_id)
+
+        # Send a no-op confirm-only feedback.
+        payload = {
+            "actions": [
+                {
+                    "action": "confirm",
+                    "start": 0,
+                    "end": 16,
+                    "entity_type": "private_email",
+                    "text": "user@example.com",
+                    "original_span_index": 0,
+                }
+            ],
+            "comment": None,
+        }
+        r2 = client.post(f"/api/v1/documents/{job_id}/apply-feedback", json=payload)
+        body = r2.json()
+        assert body["training_records_added"] == 0

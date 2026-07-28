@@ -98,6 +98,12 @@ class ApplyFeedbackResponse(BaseModel):
     injected from ``add`` actions (or accepted from re-confirmed
     detections).  ``kept`` is the number of originally-detected spans
     that survived after the user pressed "Отправить правки".
+
+    ``training_records_added`` is the number of ADD actions that were
+    appended to the cumulative training dataset (``feedback_dataset.jsonl``).
+    The user sees this counter in the UI so they know their
+    corrections will be picked up by the next "Запустить дообучение"
+    run.
     """
 
     job_id: UUID
@@ -106,6 +112,8 @@ class ApplyFeedbackResponse(BaseModel):
     kept: int
     rejected: int
     output_ext: Literal["md", "docx"]
+    training_records_added: int = 0
+    training_dataset_path: str | None = None
 
 
 class ModeInfoResponse(BaseModel):

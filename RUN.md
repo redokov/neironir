@@ -201,6 +201,15 @@ curl -OJ http://127.0.0.1:8000/api/v1/documents/<job_id>/download
 переписывает `result.{md|docx}` с сохранением сквозной нумерации
 плейсхолдеров (`<PRIVATE_EMAIL1>`, `<PRIVATE_EMAIL2>`, …).
 
+**`add` actions попадают в обучающий датасет автоматически.** Каждый
+раз, когда пользователь нажимает «Сохранить правки», ADD-действия
+сразу добавляются в `feedback_dataset.jsonl` (по пути
+`<storage_dir>/checkpoints/training_dataset.jsonl`). Админу не нужно
+ждать нажатия «Запустить дообучение» — данные копятся постепенно.
+Ответ содержит `training_records_added` (сколько ADD-плейсхолдеров
+попало в датасет) и `training_dataset_path` (где лежит файл), чтобы
+UI мог показать пользователю подтверждение.
+
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/documents/<job_id>/apply-feedback \
   -H "Content-Type: application/json" \
@@ -225,6 +234,11 @@ curl -X POST http://127.0.0.1:8000/api/v1/documents/<job_id>/apply-feedback \
   "added": 1,
   "kept": 0,
   "rejected": 1,
-  "output_ext": "md"
+  "output_ext": "md",
+  "training_records_added": 1,
+  "training_dataset_path": "/path/to/storage/checkpoints/training_dataset.jsonl"
 }
 ```
+
+Кнопка «Запустить дообучение» в админке (``POST /api/v1/admin/training/start``)
+после этого читает уже накопленный файл и вызывает `opf train`.

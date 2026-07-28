@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
-from pathlib import PurePath
+from pathlib import Path, PurePath
 from typing import Literal
 from uuid import UUID, uuid4
 
@@ -44,6 +44,7 @@ from neironir.api.schemas import (
     JobResponse,
     ModeInfoResponse,
 )
+from neironir.admin.training import append_job_feedback_to_dataset
 from neironir.config import Settings
 from neironir.domain.job import Job, JobStatus
 from neironir.privacy.client import PrivacyFilterClient
@@ -334,6 +335,7 @@ async def apply_feedback(
     job_id: UUID,
     payload: FeedbackSubmit,
     storage: LocalStorage = Depends(get_storage),
+    settings: Settings = Depends(get_settings),
 ) -> ApplyFeedbackResponse:
     """Rewrite the cleaned file with the user's corrections applied.
 
@@ -343,6 +345,12 @@ async def apply_feedback(
     placeholders that **continue** the existing numbering; ``reject``
     actions restore the original text in place of the placeholder;
     ``confirm`` actions are no-ops.
+
+    ADD actions are also appended to the cumulative training dataset
+    (``<storage>/checkpoints/training_dataset.jsonl``) so the model
+    learns from corrections **immediately**, without waiting for the
+    admin "Запустить дообучение" run.  The response surfaces the
+    count and the dataset path so the UI can confirm the contribution.
 
     Returns the counters of how many actions were applied.
     """
@@ -374,9 +382,23 @@ async def apply_feedback(
         feedback_actions=list(feedback["actions"] or []),  # type: ignore[arg-type]
     )
 
+    # Append the new ADD actions to the cumulative training dataset.
+    # This lets the model learn from corrections **immediately** —
+    # admins don't have to wait for the next training run to harvest
+    # the signal.
+    dataset_path = _training_dataset_path(settings)
+    training_records_added = append_job_feedback_to_dataset(
+        storage.job_dir(job_id), dataset_path
+    )
+
     logger.info(
-        "applied feedback for job %s: %d add, %d reject, %d confirm",
-        job_id, summary.added, summary.rejected, summary.kept,
+        "applied feedback for job %s: %d add, %d reject, %d confirm; "
+        "%d new training record(s)",
+        job_id,
+        summary.added,
+        summary.rejected,
+        summary.kept,
+        training_records_added,
     )
     return ApplyFeedbackResponse(
         job_id=job_id,
@@ -385,6 +407,8 @@ async def apply_feedback(
         kept=summary.kept,
         rejected=summary.rejected,
         output_ext=job.effective_output_ext,
+        training_records_added=training_records_added,
+        training_dataset_path=str(dataset_path),
     )
 
 
@@ -505,6 +529,20 @@ def _validate_output_format(
             f"source_ext={source_ext!r}; only md→md, docx→md and docx→docx are supported."
         ),
     )
+
+
+def _training_dataset_path(settings: Settings) -> Path:
+    """Return the path where ``apply_feedback`` accumulates training
+    records.
+
+    Mirrors the path used by the admin "Запустить дообучение" button so
+    both code paths write to the same JSONL file — the admin button
+    sees everything that was streamed in through ``apply_feedback``.
+    """
+    from neironir.admin.training import CUMULATIVE_DATASET_NAME
+
+    root = Path(settings.storage_dir) / "checkpoints" / CUMULATIVE_DATASET_NAME
+    return root
 
 
 def _ensure_job_dir_exists(storage: LocalStorage, job_id: UUID) -> None:

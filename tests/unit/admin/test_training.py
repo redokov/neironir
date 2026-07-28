@@ -365,3 +365,56 @@ class TestStartTrainingFromFeedback:
                     import signal
 
                     os.kill(state.pid, signal.SIGTERM)
+
+    @pytest.mark.asyncio
+    async def test_merges_cumulative_and_fresh_datasets(
+        self, feedback_dir: Path, tmp_path: Path
+    ) -> None:
+        """``start_training_from_feedback`` must read records from
+        **both** the cumulative ``training_dataset.jsonl`` (written by
+        ``apply-feedback``) **and** the fresh ``feedback.json`` files
+        on disk, and deduplicate them by ``(text, start, end, label)``."""
+        # Pre-seed a cumulative dataset with two records.
+        checkpoints = feedback_dir / "checkpoints"
+        checkpoints.mkdir(parents=True)
+        cumulative = checkpoints / "training_dataset.jsonl"
+        cumulative.write_text(
+            json.dumps({
+                "text": "Email: a@b.com",
+                "spans": [{"start": 7, "end": 14, "label": "private_email"}],
+            }) + "\n"
+            + json.dumps({
+                "text": "Email: a@b.com",
+                "spans": [{"start": 7, "end": 14, "label": "private_email"}],
+            }) + "\n",
+            encoding="utf-8",
+        )
+
+        out = tmp_path / "out"
+        out.mkdir()
+
+        state = await training.start_training_from_feedback(
+            storage_dir=feedback_dir,
+            output_dir=out,
+            opf_cmd=[sys.executable, "-c", "print('epoch=1 loss=0.1')"],
+            epochs=1,
+        )
+
+        try:
+            assert state.status in {TrainingStatus.RUNNING, TrainingStatus.COMPLETED}, state.error
+            combined_path = Path(state.dataset_path)
+            assert combined_path.is_file()
+
+            lines = combined_path.read_text(encoding="utf-8").strip().splitlines()
+            # The cumulative file had 2 records but they are the same
+            # (text, start, end, label) — deduplication should collapse
+            # them to 1.  Fresh feedback adds 2 more distinct records.
+            # Total: 1 + 2 = 3.
+            assert len(lines) == 3, f"expected 3 deduplicated records, got {len(lines)}"
+        finally:
+            if state.pid:
+                with contextlib.suppress(ProcessLookupError):
+                    import os
+                    import signal
+
+                    os.kill(state.pid, signal.SIGTERM)
