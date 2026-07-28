@@ -106,9 +106,18 @@ def _slice_paragraphs(
     The replacements are anchored in the concatenated text; we project
     each one into a single paragraph. Anything that doesn't fit is
     rejected with a descriptive :class:`ValueError`.
+
+    Replacements are applied in *descending* order of ``start`` so
+    that each placeholder insertion cannot invalidate the offsets of
+    the replacements that have not been processed yet. The caller may
+    pass the replacements in any order; this function is the single
+    source of truth for sorting. (See also
+    :meth:`MarkdownConverter.build` for the same strategy on plain
+    text.)
     """
     rewritten = list(paragraph_texts)
-    for replacement in replacements:
+    ordered = sorted(replacements, key=lambda r: r.start, reverse=True)
+    for replacement in ordered:
         start_paragraph = _find_paragraph_index(cumulative, replacement.start)
         end_paragraph = _find_paragraph_index(cumulative, replacement.end - 1)
 
