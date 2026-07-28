@@ -196,44 +196,19 @@ def _validate_conversion(source_ext: str, output_ext: str) -> None:
 
 
 def _docx_to_markdown(source_path: Path) -> str:
-    """Convert a ``.docx`` file to markdown via pandoc.
+    """Convert a ``.docx`` file to a clean markdown representation.
 
-    Pandoc is significantly better than python-docx at preserving the
-    document structure (headings, lists, emphasis).  When pandoc is not
-    available or fails, fall back to :class:`DocxConverter.extract_text`
-    so the pipeline still produces a usable (if structurally-flat)
-    text.  The returned string is what gets fed to the privacy-filter
-    model and rewritten as ``result.md``.
+    The custom python-docx-based converter in
+    :mod:`neironir.converters.docx_to_md` keeps only the structural
+    elements the spec calls out: headings, paragraphs (with bold /
+    italic), tables, hyperlinks flattened to plain text.  It
+    deliberately drops ``pandoc``-induced noise (``.mark`` /
+    ``.underline`` span classes, ``{=html}`` blocks, autolink
+    wrappers) that made the previous output harder to annotate.
     """
-    import shutil
-    import subprocess
+    from neironir.converters.docx_to_md import convert_to_markdown
 
-    pandoc_exe: str | None = shutil.which("pandoc")
-    if pandoc_exe is not None:
-        try:
-            completed = subprocess.run(
-                [pandoc_exe, str(source_path), "-t", "markdown", "--wrap", "none"],
-                capture_output=True,
-                check=False,
-                timeout=30,
-            )
-        except subprocess.TimeoutExpired:
-            logger.warning("pandoc timed out on %s; falling back to python-docx", source_path)
-            completed = None
-        if completed is not None:
-            if completed.returncode == 0:
-                # Strip the trailing newline so offsets match the
-                # python-docx path more closely.
-                return completed.stdout.decode("utf-8").rstrip("\n")
-            logger.warning(
-                "pandoc exited %d on %s; falling back to python-docx: %s",
-                completed.returncode,
-                source_path,
-                completed.stderr.decode("utf-8", errors="replace").strip(),
-            )
-
-    # Fallback: python-docx flat text via the docx converter.
-    return DocxConverter().extract_text(source_path)
+    return convert_to_markdown(source_path)
 
 
 def _build_replacements(spans: list[EntitySpan]) -> list[Replacement]:
