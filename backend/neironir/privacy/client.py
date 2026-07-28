@@ -213,9 +213,14 @@ class SubprocessPrivacyFilterClient:
             # ``opf`` writes a latency summary and checkpoint download
             # logs to stderr. Surface it through the project logger so
             # operators can correlate timings without polluting stdout.
-            logger.debug("opf stderr: %s", stderr_b.decode("utf-8", errors="replace"))
+            logger.debug("opf stderr: %s", _decode_opf_output(stderr_b))
 
-        payload = json.loads(stdout_b.decode("utf-8"))
+        raw_text = _decode_opf_output(stdout_b)
+        # ``opf`` appends a colour legend and a colour-coded text preview
+        # after the JSON payload — strip everything after the first complete
+        # JSON object.
+        json_end = _find_json_end(raw_text)
+        payload = json.loads(raw_text[:json_end])
         self._validate_schema_version(payload)
         return [
             EntitySpan(start=int(span["start"]), end=int(span["end"]), entity_type=entity_type)
@@ -291,6 +296,45 @@ class SubprocessPrivacyFilterClient:
         except ValueError:
             logger.warning("privacy-filter emitted unknown label: %r", label)
             return None
+
+
+def _decode_opf_output(data: bytes) -> str:
+    """Decode ``opf`` CLI output, handling Windows encoding quirks.
+
+    On Windows the ``opf`` subprocess writes JSON with its ``text``
+    field encoded in the system's active code page (e.g. CP1251 for
+    Russian Windows) rather than UTF-8. We try UTF-8 first and fall
+    back to the system encoding.
+    """
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        # ``locale.getpreferredencoding()`` returns e.g. ``cp1251``
+        # on Russian Windows.
+        import locale
+
+        encoding = locale.getpreferredencoding()
+        logger.debug("opf output is not valid UTF-8; falling back to %s", encoding)
+        return data.decode(encoding, errors="replace")
+
+
+def _find_json_end(text: str) -> int:
+    """Return the position of the closing ``}`` of the top-level JSON object.
+
+    ``opf`` appends colour legend and colour-coded output after the
+    JSON payload. This function finds where the JSON ends by tracking
+    brace depth.
+    """
+    depth = 0
+    for i, ch in enumerate(text):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+    # No balanced object found — let json.loads raise the error.
+    return len(text)
 
 
 __all__ = [
