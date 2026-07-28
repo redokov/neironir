@@ -7,6 +7,8 @@ __pycache__/
 venv/
 env/
 .venv/
+.venv-opf/   # isolated venv used for opf dry-runs
+.venv-*/
 ENV/
 .env
 .env.local
@@ -35,3 +37,6 @@ htmlcov/
 dist/
 build/
 *.egg-info/
+
+# Privacy-filter model checkpoint (downloaded by opf on first run).
+.opf/
