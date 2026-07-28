@@ -83,7 +83,7 @@
 
 ## Конфигурация
 
-Через переменные окружения (`.env` или процесс):
+Через переменные окружения (`.env` или процесс), префикс `NEIRONIR_`:
 
 | Имя | Дефолт | Описание |
 |---|---|---|
@@ -91,6 +91,13 @@
 | `NEIRONIR_PORT` | `8000` | Порт uvicorn |
 | `NEIRONIR_STORAGE_DIR` | `./storage` | Корень файлового хранилища |
 | `NEIRONIR_MAX_FILE_SIZE` | `20971520` (20 МБ) | Лимит загрузки в байтах |
-| `NEIRONIR_PRIVACY_FILTER_CMD` | `python -m privacy_filter` | Команда запуска CLI privacy-filter |
+| `NEIRONIR_PRIVACY_FILTER_MODE` | `mock` | `mock` — regex-эвристики (без модели); `subprocess` — вызов `opf` CLI |
+| `NEIRONIR_PRIVACY_FILTER_CMD` | `python -m opf` | Команда запуска CLI privacy-filter (для `subprocess`) |
 | `NEIRONIR_PRIVACY_FILTER_TIMEOUT` | `600` | Таймаут обработки, секунды |
+| `NEIRONIR_PRIVACY_FILTER_DEVICE` | `cpu` | Устройство (`cpu` или `cuda`) |
+| `NEIRONIR_PRIVACY_FILTER_CHECKPOINT_DIR` | _пусто_ | Путь к чекпойнту; пусто — opf использует `OPF_CHECKPOINT` или `~/.opf/privacy_filter` |
+| `NEIRONIR_FRONTEND_DIR` | `frontend` | Каталог статического фронтенда |
 | `NEIRONIR_LOG_LEVEL` | `INFO` | Уровень логирования |
+
+Полный список — в `backend/neironir/config.py` (один источник истины).
+См. также [`.env.example`](../.env.example) в корне репозитория.
