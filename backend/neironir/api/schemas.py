@@ -108,9 +108,21 @@ class ApplyFeedbackResponse(BaseModel):
     output_ext: Literal["md", "docx"]
 
 
+class ModeInfoResponse(BaseModel):
+    """Description of the active privacy filter.
+
+    Returned by ``GET /api/v1/documents/mode``.  Lets the frontend
+    explain to the user which entity types will be redacted and
+    whether the real neural model is active.
+    """
+
+    privacy_filter_mode: str
+    detected_types: list[str]
+
+
 __all__ = [
     "JobResponse", "HealthResponse", "ErrorResponse",
     "AnnotationSpan", "AnnotationsResponse",
     "FeedbackItemIn", "FeedbackSubmit", "FeedbackResponse",
-    "ApplyFeedbackResponse",
+    "ApplyFeedbackResponse", "ModeInfoResponse",
 ]

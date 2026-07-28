@@ -50,6 +50,8 @@
     $.uploadOptions = document.getElementById("upload-options");
     $.outputFormatMd = document.getElementById("output-format-md");
     $.outputFormatHint = document.getElementById("output-format-hint");
+    $.modeInfoSection = document.getElementById("mode-info-section");
+    $.modeInfoText = document.getElementById("mode-info-text");
 
     // Upload handlers
     $.pick.addEventListener("click", function (e) {
@@ -103,6 +105,11 @@
 
     // Selection-based annotation
     $.preview.addEventListener("mouseup", onTextSelect);
+
+    // Show a banner describing which entity types the active privacy
+    // filter is able to detect — most useful in mock mode where
+    // names and addresses are not detected.
+    loadModeInfo();
   }
 
   // ------------------------------------------------------------------
@@ -127,8 +134,10 @@
   function showUploadOptions(ext) {
     $.uploadOptions.hidden = false;
     if (ext === "docx") {
+      // For .docx we keep the user's previous choice across
+      // multiple uploads so that "перетащил следующий файл" doesn't
+      // silently reset the format option.
       $.outputFormatMd.disabled = false;
-      $.outputFormatMd.checked = false;
       updateOutputFormatHint();
     } else {
       // For .md files the output is always .md — the checkbox is
@@ -296,6 +305,10 @@
     closeReview();
     currentJobId = null;
     $.jobSection.hidden = true;
+    stopPolling();
+    closeReview();
+    currentJobId = null;
+    $.jobSection.hidden = true;
     $.jobFilename.textContent = "—";
     $.jobStatus.textContent = "—";
     $.download.hidden = true;
@@ -304,7 +317,44 @@
     $.errorEl.hidden = true;
     $.fileInput.value = "";
     $.uploadOptions.hidden = true;
-    $.outputFormatMd.checked = false;
+    // The "Результат в MD-формате" checkbox keeps its previous
+    // selection across uploads so that dragging the next file
+    // doesn't silently disable the user's preferred conversion.
+  }
+
+  // ------------------------------------------------------------------
+  //  Mode info — describes which entity types the active privacy
+  //  filter is able to detect.
+  // ------------------------------------------------------------------
+
+  function loadModeInfo() {
+    fetch("/api/v1/mode")
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (body) {
+        if (!body) return;
+        var mode = body.privacy_filter_mode;
+        var detected = (body.detected_types || []).map(function (t) {
+          return ENTITY_LABELS[t] || t;
+        });
+        var label = detected.join(", ");
+        var msg;
+        if (mode === "mock") {
+          msg =
+            "Режим mock — в этом режиме модель заменяет только " +
+            label +
+            ". Чтобы распознавались также ФИО и адреса, запустите сервис " +
+            "с реальной моделью (NEIRONIR_PRIVACY_FILTER_MODE=subprocess).";
+        } else {
+          msg =
+            "Режим " + mode + " — будут распознаны: " + label + ".";
+        }
+        $.modeInfoText.textContent = msg;
+        $.modeInfoSection.hidden = false;
+      })
+      .catch(function () {
+        // Endpoint may not be available on older deployments — the
+        // banner is purely informational, so we silently skip.
+      });
   }
 
   // ------------------------------------------------------------------
@@ -504,10 +554,37 @@
 
     document.body.appendChild(toolbar);
 
-    // Position toolbar near selection
+    // Position toolbar near the selection.  The toolbar is
+    // ``position: fixed`` so we use viewport-relative coordinates
+    // (``rect.bottom``) — adding ``window.scrollY`` would push the
+    // toolbar far below the visible viewport when the user
+    // highlighted text near the bottom of a long scrollable
+    // preview.
     var rect = sel.getRangeAt(0).getBoundingClientRect();
-    var top = rect.bottom + window.scrollY + 4;
-    var left = rect.left + window.scrollX;
+    var top = rect.bottom + 4;
+    var left = rect.left;
+    // Clamp horizontally so the toolbar never goes off-screen on
+    // narrow viewports.
+    var maxLeft = window.innerWidth - 320;
+    if (left > maxLeft) left = Math.max(8, maxLeft);
+    // Clamp vertically.  If the selection is close to the bottom of
+    // the viewport (or scrolled out of view inside a tall
+    // scrollable container), show the toolbar above the selection
+    // instead of below.
+    var toolbarHeight = 36;
+    if (top + toolbarHeight > window.innerHeight) {
+      top = rect.top - toolbarHeight - 4;
+      if (top < 0) top = Math.max(4, window.innerHeight - toolbarHeight);
+    }
+    // Final clamp: never let the toolbar leave the viewport
+    // entirely.  This protects against ``getBoundingClientRect``
+    // returning coordinates outside the viewport (e.g. when the
+    // selection lives inside a scrollable container and is not
+    // currently visible).
+    if (top < 0) top = 4;
+    if (top + toolbarHeight > window.innerHeight) {
+      top = Math.max(4, window.innerHeight - toolbarHeight);
+    }
     toolbar.style.top = top + "px";
     toolbar.style.left = left + "px";
   }

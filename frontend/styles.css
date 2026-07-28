@@ -341,6 +341,16 @@ h1 {
   cursor: pointer;
 }
 
+.mode-info {
+  background: #f1f5f9;
+  border-left: 4px solid #2563eb;
+}
+
+.mode-info .hint {
+  color: #334155;
+  margin: 0;
+}
+
 /* Responsive tweaks */
 @media (max-width: 600px) {
   .container {

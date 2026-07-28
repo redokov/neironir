@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 
 from neironir.admin.router import router as admin_router
 from neironir.api import jobs, rules, ui
+from neironir.api.jobs import meta_router
 from neironir.api.dependencies import get_privacy, get_settings, get_storage
 from neironir.config import Settings
 
@@ -26,6 +27,7 @@ def create_app() -> FastAPI:
 
     app.include_router(ui.router)
     app.include_router(jobs.router)
+    app.include_router(jobs.meta_router)
     app.include_router(rules.router)
     app.include_router(admin_router)
 

@@ -42,6 +42,7 @@ from neironir.api.schemas import (
     FeedbackResponse,
     FeedbackSubmit,
     JobResponse,
+    ModeInfoResponse,
 )
 from neironir.config import Settings
 from neironir.domain.job import Job, JobStatus
@@ -56,7 +57,63 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/documents", tags=["documents"])
 
 
+# A separate router for endpoints that live under ``/api/v1`` but
+# outside the ``/documents`` namespace — needed because the jobs
+# router uses ``/{job_id}`` as a path parameter which would shadow
+# any literal ``/mode`` style path.
+meta_router = APIRouter(prefix="/api/v1", tags=["meta"])
+
+
 _ALLOWED_EXTS = (".md", ".docx")
+
+
+# Entity types the **mock** privacy filter is able to detect.  The
+# frontend uses this list to render a small banner that explains
+# which PII categories will (and won't) be redacted when running in
+# mock mode.  See ``docs/api.md`` for the full mode reference.
+_MOCK_DETECTED_TYPES = (
+    "private_email",
+    "private_phone",
+    "private_url",
+    "private_date",
+    "account_number",
+    "secret",
+)
+
+_FULL_DETECTED_TYPES = (
+    "private_person",
+    "private_address",
+    "private_email",
+    "private_phone",
+    "private_url",
+    "private_date",
+    "account_number",
+    "secret",
+)
+
+
+@meta_router.get("/mode", response_model=ModeInfoResponse)
+async def get_mode(
+    settings: Settings = Depends(get_settings),
+) -> ModeInfoResponse:
+    """Describe the active privacy filter so the UI can explain its limits.
+
+    The frontend uses ``detected_types`` to render a one-liner that
+    tells the user which entity categories will be redacted in this
+    mode.  For ``mock`` we explicitly do **not** include names or
+    addresses so the user understands why those remain visible in the
+    output.
+    """
+    mode = settings.privacy_filter_mode
+    detected = (
+        list(_MOCK_DETECTED_TYPES)
+        if mode == "mock"
+        else list(_FULL_DETECTED_TYPES)
+    )
+    return ModeInfoResponse(
+        privacy_filter_mode=mode,
+        detected_types=detected,
+    )
 
 
 @router.post(
@@ -461,4 +518,4 @@ def _ensure_job_dir_exists(storage: LocalStorage, job_id: UUID) -> None:
         )
 
 
-__all__ = ["router"]
+__all__ = ["router", "meta_router"]
