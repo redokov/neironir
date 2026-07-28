@@ -118,7 +118,9 @@ class MockPrivacyFilterClient:
                     )
                 )
 
-        candidates.sort(key=lambda span: (span.start, _priority(span.entity_type)))
+        # The dedup helper is the single source of truth for overlap
+        # resolution — it must keep the higher-priority rule across
+        # the whole input, not just at equal ``start`` positions.
         return _deduplicate(candidates)
 
 
@@ -132,12 +134,32 @@ def _priority(entity_type: EntityType) -> int:
 
 
 def _deduplicate(spans: list[EntitySpan]) -> list[EntitySpan]:
-    """Drop spans that overlap with a higher-priority earlier span."""
+    """Drop spans that overlap with a higher-priority earlier span.
+
+    The priority order is the one declared in :data:`_RULES` — the
+    earlier a rule sits, the more specific it is (email is more
+    specific than phone, phone is more specific than URL, …). When
+    two spans overlap, only the highest-priority one survives. The
+    output is sorted by start so callers can iterate replacements
+    in ascending position; ties on start keep the higher-priority
+    span first, matching how the pipeline breaks ties when assigning
+    placeholder numbers.
+    """
+    if not spans:
+        return []
+    # Process in priority order: the higher-priority rule (lower
+    # numeric priority) goes first. An incoming span is added to the
+    # kept list only if no already-kept span overlaps with it. The
+    # sweep below guarantees that the kept list at every step has no
+    # overlaps, so the first sweep suffices — re-sorting at the end
+    # is purely cosmetic.
+    ordered = sorted(spans, key=lambda s: (_priority(s.entity_type), s.start))
     kept: list[EntitySpan] = []
-    for span in spans:
+    for span in ordered:
         if any(_overlaps(span, kept_span) for kept_span in kept):
             continue
         kept.append(span)
+    kept.sort(key=lambda s: (s.start, _priority(s.entity_type)))
     return kept
 
 
