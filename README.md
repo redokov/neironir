@@ -76,9 +76,17 @@ uv run uvicorn neironir.main:app --reload --port 8000
 ## Проверка
 
 ```bash
-make check         # ruff + mypy + pytest
+make check         # ruff + mypy + pytest (mock)
 make test-cov      # coverage report
+make test-real     # прогон с реальной OPF-моделью — обязательно перед релизом
+make pre-release   # lint + type + test + test-real — полный pre-release чек
 ```
+
+Тесты с маркером `real_model` (см. `tests/integration/test_pipeline_real_model.py`)
+прогоняются через реальный subprocess OPF и занимают ~3 минуты. По умолчанию
+они пропускаются — запускаются только с `NEIRONIR_RUN_REAL_MODEL_TESTS=1`
+или через `make test-real`. Используются для финальной проверки, что изменения
+в pipeline не сломали работу с настоящей моделью (mock этого не покрывает).
 
 CI: GitHub Actions, см. `.github/workflows/ci.yml`.
 

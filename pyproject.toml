@@ -34,6 +34,9 @@ packages = ["backend/neironir"]
 pythonpath = ["backend"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "real_model: integration tests that require a real OPF subprocess. Skipped unless the OPF binary is on PATH and NEIRONIR_RUN_REAL_MODEL_TESTS=1.",
+]
 
 [tool.coverage.run]
 source = ["backend/neironir"]

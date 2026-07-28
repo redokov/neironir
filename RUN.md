@@ -49,11 +49,47 @@ NEIRONIR_PRIVACY_FILTER_TIMEOUT=600
 
 ```bash
 cd /c/MyProjects/neurodoc
-.venv/Scripts/python -m pytest                     # 106 тестов
-.venv/Scripts/python -m ruff check .               # линт
-.venv/Scripts/python -m mypy backend/neironir      # типы
+.venv/Scripts/python -m pytest -m "not real_model"   # все обычные тесты (mock)
+.venv/Scripts/python -m ruff check .                # линт
+.venv/Scripts/python -m mypy backend/neironir       # типы
 .venv/Scripts/python -m pytest --cov=backend/neironir --cov-report=term-missing  # покрытие
 ```
+
+### Тесты с реальной моделью (обязательно перед релизом)
+
+Набор тестов, которые прогоняются через настоящий OPF-процесс. По
+умолчанию пропускаются (требуют установленной модели и занимают
+~3 минуты). Запускаются через `make test-real` или напрямую:
+
+```bash
+# 1. Убедиться, что opf на месте
+.venv-opf/Scripts/opf.exe --help
+
+# 2. Прогнать — должны пройти все 6 тестов:
+cd /c/MyProjects/neurodoc
+NEIRONIR_PRIVACY_FILTER_CMD=".venv-opf/Scripts/opf.exe" \
+NEIRONIR_RUN_REAL_MODEL_TESTS=1 \
+.venv/Scripts/python -m pytest -m real_model -v
+
+# или через Makefile:
+make test-real
+```
+
+Что проверяется:
+
+- `TestRealModelDetection` — реальная модель находит ФИО, адреса, email
+  (mock этого не умеет — критично для уверенности, что прод работает).
+- `TestRealModelDocxToMarkdown` — `docx → md` через pandoc + реальный OPF
+  не ломает offsets, плейсхолдеры появляются в правильных местах.
+- `TestRealModelApplyFeedback` — `apply-feedback` корректно работает на
+  выводе реальной модели (offsets не смещены, отклонение реального
+  PII восстанавливает оригинальный текст).
+- `TestRealModelModeReporting` — endpoint `/api/v1/mode` показывает все
+  8 категорий, когда сервер работает в subprocess-режиме.
+
+Этот набор **должен** проходить перед каждой сборкой (`make pre-release`),
+иначе есть риск, что изменения в pipeline ломают только реальную модель
+(а не mock).
 
 ---
 
