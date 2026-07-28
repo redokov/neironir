@@ -42,4 +42,56 @@ class ErrorResponse(BaseModel):
     message: str
 
 
-__all__ = ["JobResponse", "HealthResponse", "ErrorResponse"]
+# -- Annotation / feedback schemas -------------------------------------------
+
+
+class AnnotationSpan(BaseModel):
+    """A single detected entity span exposed to the frontend."""
+
+    index: int
+    start: int
+    end: int
+    entity_type: str
+    text: str
+    source: str  # "model", "rule", or "user"
+
+
+class AnnotationsResponse(BaseModel):
+    """Full annotation state for a job."""
+
+    job_id: UUID
+    text: str
+    spans: list[AnnotationSpan]
+    has_feedback: bool = False
+
+
+class FeedbackItemIn(BaseModel):
+    """A single user action from the frontend."""
+
+    action: str  # "confirm" | "reject" | "add"
+    start: int
+    end: int
+    entity_type: str
+    text: str
+    original_span_index: int | None = None
+
+
+class FeedbackSubmit(BaseModel):
+    """Feedback payload from the review UI."""
+
+    actions: list[FeedbackItemIn]
+    comment: str | None = None
+
+
+class FeedbackResponse(BaseModel):
+    """Confirmation that feedback was saved."""
+
+    job_id: UUID
+    accepted: int
+
+
+__all__ = [
+    "JobResponse", "HealthResponse", "ErrorResponse",
+    "AnnotationSpan", "AnnotationsResponse",
+    "FeedbackItemIn", "FeedbackSubmit", "FeedbackResponse",
+]

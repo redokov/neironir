@@ -4,10 +4,16 @@ The pipeline is a sequence of side-effecting steps orchestrated by
 :func:`run_job`. It is intentionally linear: each step feeds the next,
 and any error short-circuits the rest of the run and flips the job to
 ``FAILED``.
+
+Starting from Phase 1 the pipeline also persists:
+
+* The extracted plain text as ``extracted_text.txt`` for the feedback UI.
+* The detected entity spans as ``annotations.json`` for the review step.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime
 from uuid import UUID
@@ -55,7 +61,14 @@ async def run_job(
         source_path = storage.job_dir(job_id) / f"source.{job.source_ext}"
         text = converter.extract_text(source_path)
 
+        # Persist the extracted text for the feedback UI.
+        _save_extracted_text(storage, job_id, text)
+
         spans = await privacy.annotate(text)
+
+        # Persist annotations for the feedback UI.
+        _save_annotations(storage, job_id, spans, text)
+
         replacements = _build_replacements(spans)
 
         target_path = storage.job_dir(job_id) / f"result.{job.source_ext}"
@@ -71,6 +84,54 @@ async def run_job(
         job.finished_at = datetime.now()
         job.error = str(exc)
         storage.save_job(job)
+
+
+def _save_extracted_text(storage: LocalStorage, job_id: UUID, text: str) -> None:
+    """Write the extracted plain text to ``extracted_text.txt``."""
+    path = storage.job_dir(job_id) / "extracted_text.txt"
+    path.write_text(text, encoding="utf-8")
+    logger.debug("saved extracted_text.txt for job %s (%d chars)", job_id, len(text))
+
+
+def _save_annotations(
+    storage: LocalStorage,
+    job_id: UUID,
+    spans: list[EntitySpan],
+    text: str,
+) -> None:
+    """Write detected spans as JSON for the feedback UI.
+
+    Each annotation includes the entity text snippet, start/end offsets,
+    entity type, and a ``source`` field (``"model"`` for neural model
+    spans, ``"rule"`` for rule-based detector spans).
+    """
+    annotations = [
+        {
+            "start": span.start,
+            "end": span.end,
+            "entity_type": span.entity_type.value,
+            "text": text[span.start : span.end],
+            "source": _detect_source(span, text),
+        }
+        for span in spans
+    ]
+    path = storage.job_dir(job_id) / "annotations.json"
+    path.write_text(json.dumps(annotations, ensure_ascii=False), encoding="utf-8")
+    logger.debug("saved annotations.json for job %s (%d spans)", job_id, len(spans))
+
+
+def _detect_source(span: EntitySpan, text: str) -> str:
+    """Heuristic to determine whether a span came from the model or rules.
+
+    This is a best-effort heuristic for the MVP. In production the
+    ``CombinedPrivacyClient`` should tag spans with their origin.
+    """
+    # ACCOUNT_NUMBER spans that include a non-digit prefix (like "ИНН ")
+    # are almost certainly from the rule detector.
+    entity_text = text[span.start : span.end]
+    if span.entity_type.value == "account_number" and not entity_text.strip().isdigit():
+        return "rule"
+    return "model"
 
 
 def _converter_for(ext: str) -> DocumentConverter:

@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <title>neironir — Админка</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <main class="container admin-container">
+      <header class="admin-header">
+        <h1>Админка</h1>
+        <nav class="admin-nav">
+          <a href="/" class="link-button">← К загрузке документов</a>
+        </nav>
+      </header>
+
+      <!-- Stats section -->
+      <section id="stats-section" class="card">
+        <h2>Счётчик документов</h2>
+        <div class="stats-grid">
+          <div class="stat-card">
+            <span class="stat-label">Всего обработано</span>
+            <span class="stat-value" id="stat-total">—</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Успешно</span>
+            <span class="stat-value" id="stat-completed">—</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">С ошибкой</span>
+            <span class="stat-value" id="stat-failed">—</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">С обратной связью</span>
+            <span class="stat-value" id="stat-feedback">—</span>
+          </div>
+        </div>
+
+        <div class="stats-controls">
+          <label for="stats-period">Период:</label>
+          <select id="stats-period">
+            <option value="day">День</option>
+            <option value="week">Неделя</option>
+            <option value="month">Месяц</option>
+          </select>
+          <label for="stats-days">Окно (дней):</label>
+          <input id="stats-days" type="number" min="1" max="365" value="30">
+          <button type="button" id="refresh-stats" class="button">Обновить</button>
+        </div>
+
+        <details class="bucket-details">
+          <summary>По периодам</summary>
+          <div id="stats-buckets" class="bucket-list">—</div>
+        </details>
+      </section>
+
+      <!-- Training section -->
+      <section id="training-section" class="card">
+        <h2>Дообучение модели</h2>
+        <div class="training-controls">
+          <label for="train-epochs">Эпохи:</label>
+          <input id="train-epochs" type="number" min="1" max="100" value="3">
+          <button type="button" id="train-start" class="button primary">Запустить дообучение</button>
+          <button type="button" id="train-stop" class="button" disabled>Остановить</button>
+        </div>
+
+        <div id="training-status" class="training-status">
+          <p>Статус: <span id="train-status-value">idle</span></p>
+          <p>Прогресс: <span id="train-progress">—</span></p>
+          <p>ETA: <span id="train-eta">—</span></p>
+          <p id="train-error" class="error" hidden></p>
+          <details>
+            <summary>Журнал (последние 50 строк)</summary>
+            <pre id="train-log" class="log-tail">—</pre>
+          </details>
+        </div>
+      </section>
+
+      <!-- Feedback browser -->
+      <section id="feedback-section" class="card">
+        <h2>Обратная связь по документам</h2>
+        <p class="hint">Список документов, по которым пользователи оставили обратную связь. Кликните по строке, чтобы увидеть детали.</p>
+        <div class="table-wrap">
+          <table class="feedback-table">
+            <thead>
+              <tr>
+                <th>Файл</th>
+                <th>Дата</th>
+                <th>Статус</th>
+                <th>Найдено PII</th>
+                <th>Подтверждено</th>
+                <th>Отклонено</th>
+                <th>Добавлено</th>
+              </tr>
+            </thead>
+            <tbody id="feedback-rows">
+              <tr><td colspan="7" class="empty">— нет данных —</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Per-document drill-down -->
+      <section id="detail-section" class="card" hidden>
+        <h2>Детали документа</h2>
+        <div id="detail-meta" class="detail-meta"></div>
+
+        <h3>Текст с подсвеченными сущностями</h3>
+        <div id="detail-text" class="preview" tabindex="0"></div>
+
+        <h3>Обратная связь</h3>
+        <div id="detail-feedback" class="detail-feedback"></div>
+
+        <div class="actions">
+          <button type="button" id="detail-close" class="button">Закрыть</button>
+        </div>
+      </section>
+
+      <!-- Rules section -->
+      <section id="rules-section" class="card">
+        <h2>Предложенные правила</h2>
+        <div class="rules-controls">
+          <label for="rules-min">Мин. вхождений:</label>
+          <input id="rules-min" type="number" min="1" max="50" value="3">
+          <button type="button" id="rules-generate" class="button">Сгенерировать предложения</button>
+          <button type="button" id="rules-refresh" class="button">Обновить список</button>
+        </div>
+        <div class="table-wrap">
+          <table class="rules-table">
+            <thead>
+              <tr>
+                <th>Тип</th>
+                <th>Паттерн</th>
+                <th>Доказательства</th>
+                <th>Уверенность</th>
+                <th>Статус</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="rules-rows">
+              <tr><td colspan="6" class="empty">— нет правил —</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <p id="global-error" class="error" hidden></p>
+    </main>
+
+    <script src="/static/admin.js" defer></script>
+  </body>
+</html>

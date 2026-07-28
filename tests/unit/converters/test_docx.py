@@ -50,22 +50,30 @@ def test_round_trip_with_replacement(tmp_path: Path) -> None:
     assert paragraphs == ["Email: <PRIVATE_EMAIL1>", "Plain paragraph"]
 
 
-def test_build_raises_value_error_on_cross_paragraph_replacement(tmp_path: Path) -> None:
-    """A replacement that straddles a paragraph boundary must raise."""
+def test_build_clips_replacement_at_element_boundary(tmp_path: Path) -> None:
+    """A replacement that straddles a paragraph boundary is clipped to the first paragraph."""
     source = _make_docx(tmp_path, ["Email me at user@example.", "com soon"])
     converter = DocxConverter()
     target = tmp_path / "out.docx"
 
     # The email starts in the first paragraph at offset 12 and ends in
-    # the second one at offset 3 — i.e. crosses the boundary.
+    # the second one at offset 3 — the span is clipped to paragraph 0.
+    # Note: text[12:] = "user@example." (14 chars). The replacement
+    # asks for end=29, but paragraph 0 only has 26 chars (+"\n").
+    # Since we clip, the placeholder replaces "user@example." in p0.
     replacement = Replacement(
         start=12,
         end=29,
         entity_type=EntityType.PRIVATE_EMAIL,
         placeholder="<PRIVATE_EMAIL1>",
     )
-    with pytest.raises(ValueError, match="crosses paragraph boundary"):
-        converter.build(source, target, [replacement])
+    converter.build(source, target, [replacement])
+
+    rewritten = Document(str(target))
+    paragraphs = [p.text for p in rewritten.paragraphs]
+    # Paragraph 0 gets the placeholder, paragraph 1 is untouched
+    # because the tail of the clipped span is dropped.
+    assert paragraphs[0] == "Email me at <PRIVATE_EMAIL1>"
 
 
 def test_build_with_no_replacements_preserves_paragraphs(tmp_path: Path) -> None:

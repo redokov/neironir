@@ -24,4 +24,12 @@ async def index(
     return FileResponse(settings.frontend_path / "index.html")
 
 
+@router.get("/admin", include_in_schema=False)
+async def admin_index(
+    settings: Settings = Depends(get_settings),
+) -> FileResponse:
+    """Serve the admin dashboard HTML page."""
+    return FileResponse(settings.frontend_path / "admin.html")
+
+
 __all__ = ["router"]

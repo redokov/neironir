@@ -157,28 +157,29 @@ def test_build_replacement_at_very_end_of_last_paragraph(tmp_path: Path) -> None
 
 
 def test_build_replacement_crosses_boundary_after_empty_paragraph(tmp_path: Path) -> None:
-    """A replacement crossing a boundary through an empty paragraph must raise.
+    """A replacement crossing a boundary through an empty paragraph is clipped.
 
-    The presence of empty paragraphs is what makes the cumulative-offset
-    arithmetic trickiest: an empty paragraph still has its own
-    ``cumulative`` slot. A cross-boundary replacement must be rejected
-    even when the boundary is an empty paragraph.
+    The placeholder replaces text only in the first element; the rest
+    of the span is dropped (no crash).
     """
     source = _make_docx(tmp_path, ["first", "", "second"])
     converter = DocxConverter()
     target = tmp_path / "out.docx"
 
-    # Concatenated: "first\n\nsecond" (length 13).
-    # 0-5: "first", 5: \n, 6: \n, 7-13: "second"
-    # Replace 4..9 which crosses into the empty paragraph (5..6).
     replacement = Replacement(
         start=4,
         end=9,
         entity_type=EntityType.PRIVATE_EMAIL,
         placeholder="<PRIVATE_EMAIL1>",
     )
-    with pytest.raises(ValueError, match="crosses paragraph boundary"):
-        converter.build(source, target, [replacement])
+    converter.build(source, target, [replacement])
+
+    # The span [4:9] starts in "first" at char 4..5 ("t") and crosses
+    # into the empty paragraph. After clipping, only "t" in "first"
+    # is replaced. The empty paragraph and "second" are untouched.
+    rewritten = Document(str(target))
+    paragraphs = [p.text for p in rewritten.paragraphs]
+    assert paragraphs[0] == "firs<PRIVATE_EMAIL1>"
 
 
 def test_build_replacements_supplied_in_reverse_order(tmp_path: Path) -> None:

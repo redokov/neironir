@@ -26,6 +26,8 @@ from neironir.privacy.client import (
     PrivacyFilterClient,
     SubprocessPrivacyFilterClient,
 )
+from neironir.privacy.combined import CombinedPrivacyClient
+from neironir.privacy.rules import RuleBasedDetector
 from neironir.storage.local import LocalStorage
 
 
@@ -46,24 +48,48 @@ def get_storage(settings: Settings = Depends(get_settings)) -> LocalStorage:
 
 
 def get_privacy(settings: Settings = Depends(get_settings)) -> PrivacyFilterClient:
-    """Return the privacy-filter client selected by ``settings.privacy_filter_mode``."""
+    """Return the privacy-filter client selected by ``settings.privacy_filter_mode``.
+
+    Supported modes:
+    * ``mock`` — regex-only stub for development and testing.
+    * ``subprocess`` — full OPF neural model via CLI.
+    * ``combined`` — neural model **plus** rule-based detector (recommended
+      for production with Russian-language documents).
+    """
     mode = settings.privacy_filter_mode
     if mode == "mock":
         return MockPrivacyFilterClient()
     if mode == "subprocess":
-        cmd = settings.privacy_filter_cmd.split()
-        checkpoint_dir = (
-            Path(settings.privacy_filter_checkpoint_dir)
-            if settings.privacy_filter_checkpoint_dir
-            else None
+        return _build_subprocess_client(settings)
+    if mode == "combined":
+        model_client = _build_subprocess_client(settings)
+        rule_detector = RuleBasedDetector()
+        # Load any approved dynamic rules from storage.
+        RuleBasedDetector.load_dynamic_rules(settings.storage_dir)
+        return CombinedPrivacyClient(
+            model_client=model_client,
+            rule_detector=rule_detector,
         )
-        return SubprocessPrivacyFilterClient(
-            opf_cmd=cmd,
-            checkpoint_dir=checkpoint_dir,
-            device=settings.privacy_filter_device,
-            timeout_s=float(settings.privacy_filter_timeout),
-        )
-    raise ValueError(f"Unknown privacy_filter_mode {mode!r}; expected 'mock' or 'subprocess'.")
+    raise ValueError(
+        f"Unknown privacy_filter_mode {mode!r}; "
+        f"expected 'mock', 'subprocess', or 'combined'."
+    )
+
+
+def _build_subprocess_client(settings: Settings) -> SubprocessPrivacyFilterClient:
+    """Construct a :class:`SubprocessPrivacyFilterClient` from settings."""
+    cmd = settings.privacy_filter_cmd.split()
+    checkpoint_dir = (
+        Path(settings.privacy_filter_checkpoint_dir)
+        if settings.privacy_filter_checkpoint_dir
+        else None
+    )
+    return SubprocessPrivacyFilterClient(
+        opf_cmd=cmd,
+        checkpoint_dir=checkpoint_dir,
+        device=settings.privacy_filter_device,
+        timeout_s=float(settings.privacy_filter_timeout),
+    )
 
 
 __all__ = ["get_privacy", "get_settings", "get_storage"]

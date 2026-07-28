@@ -7,7 +7,8 @@ import logging
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from neironir.api import jobs, ui
+from neironir.admin.router import router as admin_router
+from neironir.api import jobs, rules, ui
 from neironir.api.dependencies import get_privacy, get_settings, get_storage
 from neironir.config import Settings
 
@@ -25,6 +26,8 @@ def create_app() -> FastAPI:
 
     app.include_router(ui.router)
     app.include_router(jobs.router)
+    app.include_router(rules.router)
+    app.include_router(admin_router)
 
     # Serve the frontend's static assets (CSS, JS). The ``index.html``
     # itself is served by ``ui.router`` at ``GET /`` so it can be

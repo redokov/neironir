@@ -7,9 +7,13 @@
   </head>
   <body>
     <main class="container">
-      <h1>neironir</h1>
+      <header class="user-header">
+        <h1>neironir</h1>
+        <nav class="admin-link"><a href="/admin" class="link-button">Админка</a></nav>
+      </header>
       <p class="lead">Удаление персональных данных из документов перед отправкой в нейросеть.</p>
 
+      <!-- Upload section -->
       <section id="upload-section" class="card">
         <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Выберите файл">
           <p>Перетащите файл сюда или <button type="button" id="pick" class="link-button">выберите</button></p>
@@ -18,6 +22,7 @@
         </div>
       </section>
 
+      <!-- Job status section -->
       <section id="job-section" class="card" hidden>
         <h2>Задача</h2>
         <dl class="job-info">
@@ -26,9 +31,46 @@
         </dl>
         <div class="actions">
           <a id="download" class="button primary" href="#" download hidden>Скачать очищенный файл</a>
+          <button type="button" id="review-btn" class="button" hidden>Проверить анонимизацию</button>
           <button type="button" id="reset" class="button">Загрузить ещё</button>
         </div>
         <p id="error" class="error" hidden></p>
+      </section>
+
+      <!-- Review section -->
+      <section id="review-section" class="card" hidden>
+        <h2>Проверка анонимизации</h2>
+        <p class="hint">Выделите текст мышью, чтобы добавить пропущенную сущность. Нажмите на сущность, чтобы удалить ложное срабатывание.</p>
+
+        <!-- Preview text with highlights -->
+        <div id="preview" class="preview" tabindex="0"></div>
+
+        <!-- Entity legend -->
+        <div class="entity-legend">
+          <span class="legend-item"><span class="tag tag-person"></span> ФИО</span>
+          <span class="legend-item"><span class="tag tag-address"></span> Адрес</span>
+          <span class="legend-item"><span class="tag tag-email"></span> Email</span>
+          <span class="legend-item"><span class="tag tag-phone"></span> Телефон</span>
+          <span class="legend-item"><span class="tag tag-date"></span> Дата</span>
+          <span class="legend-item"><span class="tag tag-account"></span> Счёт/ИНН</span>
+          <span class="legend-item"><span class="tag tag-secret"></span> Секрет</span>
+        </div>
+
+        <!-- Actions -->
+        <div class="actions">
+          <button type="button" id="confirm-all" class="button primary">Всё верно</button>
+          <button type="button" id="submit-feedback" class="button" hidden>Отправить правки</button>
+          <button type="button" id="skip-review" class="button">Пропустить</button>
+        </div>
+
+        <!-- Comment -->
+        <div id="comment-section" class="comment-section" hidden>
+          <label for="feedback-comment">Комментарий (необязательно):</label>
+          <textarea id="feedback-comment" rows="2" placeholder="Замечания по качеству анонимизации..."></textarea>
+        </div>
+
+        <!-- Feedback confirmation -->
+        <p id="feedback-success" class="success" hidden>Спасибо! Ваши правки сохранены и будут использованы для улучшения модели.</p>
       </section>
     </main>
     <script src="/static/app.js" defer></script>

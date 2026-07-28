@@ -15,6 +15,7 @@ shape stays consistent across handlers.
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import PurePath
 from typing import Literal
@@ -24,7 +25,14 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Up
 from fastapi.responses import FileResponse
 
 from neironir.api.dependencies import get_privacy, get_settings, get_storage
-from neironir.api.schemas import ErrorResponse, JobResponse
+from neironir.api.schemas import (
+    AnnotationsResponse,
+    AnnotationSpan,
+    ErrorResponse,
+    FeedbackResponse,
+    FeedbackSubmit,
+    JobResponse,
+)
 from neironir.config import Settings
 from neironir.domain.job import Job, JobStatus
 from neironir.privacy.client import PrivacyFilterClient
@@ -149,8 +157,111 @@ async def download(
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Annotation / Feedback / Preview endpoints
 # ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/{job_id}/annotations",
+    response_model=AnnotationsResponse,
+    responses={404: {"model": ErrorResponse, "description": "Job or annotations not found"}},
+)
+async def get_annotations(
+    job_id: UUID,
+    storage: LocalStorage = Depends(get_storage),
+) -> AnnotationsResponse:
+    """Return the extracted text and all detected entity spans."""
+    _ensure_job_dir_exists(storage, job_id)
+
+    text_path = storage.job_dir(job_id) / "extracted_text.txt"
+    if not text_path.is_file():
+        raise _http_error(
+            status.HTTP_404_NOT_FOUND,
+            code="not_found",
+            message="extracted_text.txt not found for this job",
+        )
+    text = text_path.read_text(encoding="utf-8")
+
+    annotations_path = storage.job_dir(job_id) / "annotations.json"
+    if not annotations_path.is_file():
+        raise _http_error(
+            status.HTTP_404_NOT_FOUND,
+            code="not_found",
+            message="annotations.json not found for this job",
+        )
+
+    raw_annotations = json.loads(annotations_path.read_text(encoding="utf-8"))
+    spans = [
+        AnnotationSpan(
+            index=i,
+            start=ann["start"],
+            end=ann["end"],
+            entity_type=ann["entity_type"],
+            text=ann["text"],
+            source=ann.get("source", "model"),
+        )
+        for i, ann in enumerate(raw_annotations)
+    ]
+
+    feedback_path = storage.job_dir(job_id) / "feedback.json"
+    return AnnotationsResponse(
+        job_id=job_id,
+        text=text,
+        spans=spans,
+        has_feedback=feedback_path.is_file(),
+    )
+
+
+@router.post(
+    "/{job_id}/feedback",
+    response_model=FeedbackResponse,
+    responses={404: {"model": ErrorResponse, "description": "Job not found"}},
+)
+async def submit_feedback(
+    job_id: UUID,
+    payload: FeedbackSubmit,
+    storage: LocalStorage = Depends(get_storage),
+) -> FeedbackResponse:
+    """Accept user corrections for a completed job."""
+    _ensure_job_dir_exists(storage, job_id)
+
+    feedback = {
+        "job_id": str(job_id),
+        "actions": [a.model_dump() for a in payload.actions],
+        "comment": payload.comment,
+    }
+    feedback_path = storage.job_dir(job_id) / "feedback.json"
+    feedback_path.write_text(
+        json.dumps(feedback, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    logger.info("feedback saved for job %s: %d actions", job_id, len(payload.actions))
+    return FeedbackResponse(job_id=job_id, accepted=len(payload.actions))
+
+
+@router.get(
+    "/{job_id}/preview",
+    responses={
+        200: {"description": "Plain text with entity markers"},
+        404: {"description": "Job or extracted text not found"},
+    },
+)
+async def get_preview_text(
+    job_id: UUID,
+    storage: LocalStorage = Depends(get_storage),
+) -> dict[str, str]:
+    """Return the extracted plain text for client-side highlighting."""
+    _ensure_job_dir_exists(storage, job_id)
+
+    text_path = storage.job_dir(job_id) / "extracted_text.txt"
+    if not text_path.is_file():
+        raise _http_error(
+            status.HTTP_404_NOT_FOUND,
+            code="not_found",
+            message="extracted_text.txt not found",
+        )
+
+    return {"text": text_path.read_text(encoding="utf-8")}
 
 
 def _http_error(http_status: int, *, code: str, message: str) -> HTTPException:
@@ -192,6 +303,17 @@ def _download_filename(source_filename: str, ext: str) -> str:
     """Build the cleaned-file download name ``<stem>.cleaned.<ext>``."""
     stem = PurePath(source_filename).stem or "document"
     return f"{stem}.cleaned.{ext}"
+
+
+def _ensure_job_dir_exists(storage: LocalStorage, job_id: UUID) -> None:
+    """Raise 404 if the job directory doesn't exist."""
+    path = storage.job_dir(job_id)
+    if not path.is_dir():
+        raise _http_error(
+            status.HTTP_404_NOT_FOUND,
+            code="not_found",
+            message=f"Job {job_id} not found",
+        )
 
 
 __all__ = ["router"]
