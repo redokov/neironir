@@ -102,15 +102,16 @@ def test_upload_unknown_extension_returns_400(
 
 def test_upload_over_max_size_returns_413(
     client_and_storage: tuple[TestClient, LocalStorage],
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client, _ = client_and_storage
     # Force a tiny cap so we don't need to ship megabytes of test data.
+    # We replace the app's settings dependency with a fresh instance
+    # rather than mutating the cached global — the global is shared
+    # across tests in the process.
     from neironir.api.dependencies import get_settings
 
     app = client.app
-    real_settings = get_settings()
-    real_settings.max_file_size = 8
+    real_settings = get_settings().model_copy(update={"max_file_size": 8})
     app.dependency_overrides[get_settings] = lambda: real_settings
 
     big = b"x" * 32
