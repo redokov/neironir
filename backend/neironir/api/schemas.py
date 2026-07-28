@@ -24,6 +24,7 @@ class JobResponse(BaseModel):
     status: Literal["pending", "processing", "completed", "failed"]
     source_filename: str
     source_ext: Literal["md", "docx"]
+    output_ext: Literal["md", "docx"] | None = None
     created_at: datetime
     finished_at: datetime | None
     error: str | None
@@ -90,8 +91,26 @@ class FeedbackResponse(BaseModel):
     accepted: int
 
 
+class ApplyFeedbackResponse(BaseModel):
+    """Result of rewriting the cleaned file with user corrections.
+
+    The ``added`` counter is the number of new placeholders that were
+    injected from ``add`` actions (or accepted from re-confirmed
+    detections).  ``kept`` is the number of originally-detected spans
+    that survived after the user pressed "Отправить правки".
+    """
+
+    job_id: UUID
+    applied: int
+    added: int
+    kept: int
+    rejected: int
+    output_ext: Literal["md", "docx"]
+
+
 __all__ = [
     "JobResponse", "HealthResponse", "ErrorResponse",
     "AnnotationSpan", "AnnotationsResponse",
     "FeedbackItemIn", "FeedbackSubmit", "FeedbackResponse",
+    "ApplyFeedbackResponse",
 ]

@@ -39,11 +39,9 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field
 from typing import ClassVar
 
 from neironir.domain.entity_type import EntityType
-
 
 logger = logging.getLogger(__name__)
 from neironir.privacy.client import EntitySpan

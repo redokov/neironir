@@ -60,6 +60,12 @@ class DocxConverter:
         The result includes a ``\\n`` separator between every pair of
         body elements (paragraph↔paragraph, paragraph↔table-cell, etc.)
         so that offsets are stable and predictable.
+
+        For the ``docx → md`` conversion the pipeline uses
+        :func:`neironir.workers.pipeline._docx_to_markdown` which
+        delegates to ``pandoc`` for a richer markdown rendering; this
+        method remains the source-of-truth offset representation that
+        :meth:`build` projects replacements onto.
         """
         document = Document(str(source))
         # Cache for :meth:`build`.

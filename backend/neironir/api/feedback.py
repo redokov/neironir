@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -30,7 +29,6 @@ from neironir.api.schemas import (
     FeedbackResponse,
     FeedbackSubmit,
 )
-from neironir.domain.job import JobStatus
 from neironir.storage.local import LocalStorage
 
 logger = logging.getLogger(__name__)

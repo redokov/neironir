@@ -21,13 +21,23 @@ from pathlib import PurePath
 from typing import Literal
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    UploadFile,
+    status,
+)
 from fastapi.responses import FileResponse
 
 from neironir.api.dependencies import get_privacy, get_settings, get_storage
 from neironir.api.schemas import (
-    AnnotationsResponse,
     AnnotationSpan,
+    AnnotationsResponse,
+    ApplyFeedbackResponse,
     ErrorResponse,
     FeedbackResponse,
     FeedbackSubmit,
@@ -37,6 +47,7 @@ from neironir.config import Settings
 from neironir.domain.job import Job, JobStatus
 from neironir.privacy.client import PrivacyFilterClient
 from neironir.storage.local import LocalStorage
+from neironir.workers.feedback_applier import FeedbackApplier
 from neironir.workers.pipeline import run_job
 
 logger = logging.getLogger(__name__)
@@ -63,8 +74,17 @@ async def upload(
     storage: LocalStorage = Depends(get_storage),
     privacy: PrivacyFilterClient = Depends(get_privacy),
     background_tasks: BackgroundTasks = BackgroundTasks(),
+    output_format: str | None = Form(default=None),  # validated manually in _validate_output_format
 ) -> JobResponse:
-    """Accept a markdown or docx file, create a job, and start the pipeline."""
+    """Accept a markdown or docx file, create a job, and start the pipeline.
+
+    Args:
+        output_format: Optional override for the cleaned file format.
+            When set to ``"md"`` and the source is ``.docx``, the
+            pipeline converts the document to plain text, redacts it
+            and writes the result as ``.md``.  Other combinations are
+            rejected with HTTP 400.
+    """
     filename = file.filename or ""
     if not filename.lower().endswith(_ALLOWED_EXTS):
         raise _http_error(
@@ -91,11 +111,15 @@ async def upload(
             message=str(exc),
         ) from exc
 
+    source_ext = _ext_from_filename(filename)
+    effective_output = _validate_output_format(source_ext, output_format)
+
     job = Job(
         id=job_id,
         status=JobStatus.PENDING,
         source_filename=filename,
-        source_ext=_ext_from_filename(filename),
+        source_ext=source_ext,
+        output_ext=effective_output,
     )
     storage.save_job(job)
 
@@ -147,11 +171,13 @@ async def download(
             ),
         )
 
-    result_path = storage.job_dir(job_id) / f"result.{job.source_ext}"
-    download_name = _download_filename(job.source_filename, job.source_ext)
+    output_ext = job.effective_output_ext
+    result_path = storage.job_dir(job_id) / f"result.{output_ext}"
+    download_name = _download_filename(job.source_filename, output_ext)
+    media_type = _media_type_for(output_ext)
     return FileResponse(
         result_path,
-        media_type="application/octet-stream",
+        media_type=media_type,
         filename=download_name,
     )
 
@@ -239,6 +265,72 @@ async def submit_feedback(
     return FeedbackResponse(job_id=job_id, accepted=len(payload.actions))
 
 
+@router.post(
+    "/{job_id}/apply-feedback",
+    response_model=ApplyFeedbackResponse,
+    responses={
+        404: {"model": ErrorResponse, "description": "Job not found"},
+        409: {"model": ErrorResponse, "description": "Job is not yet completed"},
+    },
+)
+async def apply_feedback(
+    job_id: UUID,
+    payload: FeedbackSubmit,
+    storage: LocalStorage = Depends(get_storage),
+) -> ApplyFeedbackResponse:
+    """Rewrite the cleaned file with the user's corrections applied.
+
+    The endpoint saves ``feedback.json`` (idempotent with
+    ``POST /{job_id}/feedback``) and then re-applies the actions on top
+    of the previously-cleaned document.  ``add`` actions inject new
+    placeholders that **continue** the existing numbering; ``reject``
+    actions restore the original text in place of the placeholder;
+    ``confirm`` actions are no-ops.
+
+    Returns the counters of how many actions were applied.
+    """
+    _ensure_job_dir_exists(storage, job_id)
+    job = storage.load_job(job_id)
+    if job.status != JobStatus.COMPLETED:
+        raise _http_error(
+            status.HTTP_409_CONFLICT,
+            code="job_not_ready",
+            message=(
+                f"Job is in status {job.status.value!r}; apply-feedback is "
+                "only available for completed jobs."
+            ),
+        )
+
+    feedback = {
+        "job_id": str(job_id),
+        "actions": [a.model_dump() for a in payload.actions],
+        "comment": payload.comment,
+    }
+    feedback_path = storage.job_dir(job_id) / "feedback.json"
+    feedback_path.write_text(
+        json.dumps(feedback, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    summary = FeedbackApplier().apply(
+        job_dir=storage.job_dir(job_id),
+        output_ext=job.effective_output_ext,
+        feedback_actions=list(feedback["actions"] or []),  # type: ignore[arg-type]
+    )
+
+    logger.info(
+        "applied feedback for job %s: %d add, %d reject, %d confirm",
+        job_id, summary.added, summary.rejected, summary.kept,
+    )
+    return ApplyFeedbackResponse(
+        job_id=job_id,
+        applied=summary.applied,
+        added=summary.added,
+        kept=summary.kept,
+        rejected=summary.rejected,
+        output_ext=job.effective_output_ext,
+    )
+
+
 @router.get(
     "/{job_id}/preview",
     responses={
@@ -303,6 +395,59 @@ def _download_filename(source_filename: str, ext: str) -> str:
     """Build the cleaned-file download name ``<stem>.cleaned.<ext>``."""
     stem = PurePath(source_filename).stem or "document"
     return f"{stem}.cleaned.{ext}"
+
+
+def _media_type_for(ext: str) -> str:
+    """Return the HTTP media type to use for a downloaded file extension."""
+    if ext == "md":
+        return "text/markdown; charset=utf-8"
+    if ext == "docx":
+        # ``application/vnd.openxmlformats-officedocument.wordprocessingml.document``
+        # is the official MIME type for ``.docx``; some browsers prefer
+        # the shorter alias so we send both via a single header.
+        return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    return "application/octet-stream"
+
+
+def _validate_output_format(
+    source_ext: str,
+    output_format: str | None,
+) -> Literal["md", "docx"] | None:
+    """Return the requested ``output_format`` if it is compatible with ``source_ext``.
+
+    Rules (matches :func:`neironir.workers.pipeline._validate_conversion`):
+
+    * ``None`` — no override, the cleaned file inherits the source ext.
+    * ``md`` allowed when source is ``md`` (identity) or ``docx``
+      (markdown conversion via pandoc).
+    * ``docx`` allowed only when source is ``docx`` (identity).
+
+    ``md`` → ``docx`` would require building a real Word document from
+    plain text — out of scope for the MVP.
+    """
+    if output_format is None:
+        return None
+    if output_format not in ("md", "docx"):
+        raise _http_error(
+            status.HTTP_400_BAD_REQUEST,
+            code="unsupported_output_format",
+            message=(
+                f"output_format={output_format!r} is not one of "
+                f"'md' or 'docx'."
+            ),
+        )
+    if source_ext == output_format:
+        return output_format  # type: ignore[return-value]
+    if source_ext == "docx" and output_format == "md":
+        return "md"
+    raise _http_error(
+        status.HTTP_400_BAD_REQUEST,
+        code="unsupported_output_format",
+        message=(
+            f"output_format={output_format!r} is not compatible with "
+            f"source_ext={source_ext!r}; only md→md, docx→md and docx→docx are supported."
+        ),
+    )
 
 
 def _ensure_job_dir_exists(storage: LocalStorage, job_id: UUID) -> None:

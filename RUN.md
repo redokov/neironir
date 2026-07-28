@@ -112,3 +112,62 @@ curl -X POST "http://127.0.0.1:8000/api/v1/admin/training/start?epochs=3"
 curl http://127.0.0.1:8000/api/v1/admin/training/status
 curl -X POST http://127.0.0.1:8000/api/v1/admin/training/stop
 ```
+
+---
+
+## Конвертация .docx → .md
+
+При загрузке `.docx` файла чекбокс «Результат в MD-формате» позволяет
+конвертировать документ в markdown с сохранением структуры (заголовки,
+списки, выделение). Конвертация выполняется через `pandoc` —
+требуется установленный `pandoc` (есть в `chocolatey` / стандартных
+репозиториях). Если pandoc недоступен, сервис падает на плоский текст
+через `python-docx`.
+
+```bash
+# Через API:
+curl -X POST \
+  -F "file=@contract.docx" \
+  -F "output_format=md" \
+  http://127.0.0.1:8000/api/v1/documents/
+# result.md — markdown с заголовками и плейсхолдерами
+curl -OJ http://127.0.0.1:8000/api/v1/documents/<job_id>/download
+```
+
+---
+
+## Применение правок к итоговому файлу
+
+В review-секции есть кнопка «Сохранить правки в файл», которая
+отправляет пользовательские действия (`add`, `reject`, `confirm`) на
+эндпоинт `POST /api/v1/documents/{job_id}/apply-feedback`. Сервис
+переписывает `result.{md|docx}` с сохранением сквозной нумерации
+плейсхолдеров (`<PRIVATE_EMAIL1>`, `<PRIVATE_EMAIL2>`, …).
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/documents/<job_id>/apply-feedback \
+  -H "Content-Type: application/json" \
+  -d '{
+    "actions": [
+      {"action": "add", "start": 12, "end": 28,
+       "entity_type": "private_phone", "text": "+7 495..."},
+      {"action": "reject", "start": 0, "end": 16,
+       "entity_type": "private_email", "text": "user@example.com",
+       "original_span_index": 0}
+    ],
+    "comment": null
+  }'
+```
+
+Ответ:
+
+```json
+{
+  "job_id": "...",
+  "applied": 2,
+  "added": 1,
+  "kept": 0,
+  "rejected": 1,
+  "output_ext": "md"
+}
+```

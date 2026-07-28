@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -85,7 +85,7 @@ def _save_rule_meta(storage_dir: Path, rule: ProposedRule) -> str:
                 "status": rule.status,
                 "description": rule.description,
                 "samples": rule.samples,
-                "first_seen": rule.first_seen or datetime.now(timezone.utc).isoformat(),
+                "first_seen": rule.first_seen or datetime.now(UTC).isoformat(),
             },
             ensure_ascii=False,
             indent=2,

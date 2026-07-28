@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 from docx import Document
 from neironir.converters.base import Replacement
 from neironir.converters.docx import DocxConverter

@@ -20,6 +20,13 @@
           <p class="hint">.md или .docx, до 20 МБ</p>
           <input id="file-input" type="file" accept=".md,.docx" hidden>
         </div>
+        <div class="upload-options" id="upload-options" hidden>
+          <label class="checkbox">
+            <input id="output-format-md" type="checkbox">
+            <span>Результат в MD-формате</span>
+          </label>
+          <p class="hint" id="output-format-hint"></p>
+        </div>
       </section>
 
       <!-- Job status section -->
@@ -59,6 +66,7 @@
         <!-- Actions -->
         <div class="actions">
           <button type="button" id="confirm-all" class="button primary">Всё верно</button>
+          <button type="button" id="apply-feedback" class="button primary">Сохранить правки в файл</button>
           <button type="button" id="submit-feedback" class="button" hidden>Отправить правки</button>
           <button type="button" id="skip-review" class="button">Пропустить</button>
         </div>
@@ -71,6 +79,8 @@
 
         <!-- Feedback confirmation -->
         <p id="feedback-success" class="success" hidden>Спасибо! Ваши правки сохранены и будут использованы для улучшения модели.</p>
+        <p id="apply-success" class="success" hidden>Правки применены к итоговому файлу.</p>
+        <p id="apply-error" class="error" hidden></p>
       </section>
     </main>
     <script src="/static/app.js" defer></script>

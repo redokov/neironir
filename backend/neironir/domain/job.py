@@ -48,9 +48,18 @@ class Job(BaseModel):
     status: JobStatus = JobStatus.PENDING
     source_filename: str
     source_ext: Literal["md", "docx"]
+    # Format the cleaned file is written in.  Defaults to ``source_ext``
+    # but a user can ask the server to convert a ``.docx`` to ``.md`` via
+    # the ``output_format`` flag on the upload endpoint.
+    output_ext: Literal["md", "docx"] | None = None
     created_at: datetime = Field(default_factory=datetime.now)
     finished_at: datetime | None = None
     error: str | None = None
+
+    @property
+    def effective_output_ext(self) -> Literal["md", "docx"]:
+        """Return ``output_ext`` if set, otherwise ``source_ext``."""
+        return self.output_ext if self.output_ext is not None else self.source_ext
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise to a plain ``dict`` ready for ``json.dump``."""

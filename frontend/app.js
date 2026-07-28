@@ -40,10 +40,16 @@
     $.preview = document.getElementById("preview");
     $.confirmAll = document.getElementById("confirm-all");
     $.submitFeedback = document.getElementById("submit-feedback");
+    $.applyFeedback = document.getElementById("apply-feedback");
     $.skipReview = document.getElementById("skip-review");
     $.commentSection = document.getElementById("comment-section");
     $.feedbackComment = document.getElementById("feedback-comment");
     $.feedbackSuccess = document.getElementById("feedback-success");
+    $.applySuccess = document.getElementById("apply-success");
+    $.applyError = document.getElementById("apply-error");
+    $.uploadOptions = document.getElementById("upload-options");
+    $.outputFormatMd = document.getElementById("output-format-md");
+    $.outputFormatHint = document.getElementById("output-format-hint");
 
     // Upload handlers
     $.pick.addEventListener("click", function (e) {
@@ -87,7 +93,11 @@
     $.reviewBtn.addEventListener("click", openReview);
     $.confirmAll.addEventListener("click", confirmAll);
     $.submitFeedback.addEventListener("click", submitFeedback);
+    $.applyFeedback.addEventListener("click", applyFeedbackToFile);
     $.skipReview.addEventListener("click", closeReview);
+
+    // Reset the output-format checkbox when the user picks a new file
+    $.outputFormatMd.addEventListener("change", updateOutputFormatHint);
 
     window.addEventListener("beforeunload", stopPolling);
 
@@ -107,6 +117,42 @@
       return "Файл больше 20 МБ";
     }
     return null;
+  }
+
+  function fileExtension(name) {
+    var m = /\.([^.]+)$/.exec(name);
+    return m ? m[1].toLowerCase() : "";
+  }
+
+  function showUploadOptions(ext) {
+    $.uploadOptions.hidden = false;
+    if (ext === "docx") {
+      $.outputFormatMd.disabled = false;
+      $.outputFormatMd.checked = false;
+      updateOutputFormatHint();
+    } else {
+      // For .md files the output is always .md — the checkbox is
+      // disabled and pre-checked so the user can see the choice is
+      // effectively locked.
+      $.outputFormatMd.disabled = true;
+      $.outputFormatMd.checked = true;
+      updateOutputFormatHint();
+    }
+  }
+
+  function updateOutputFormatHint() {
+    if ($.outputFormatMd.disabled) {
+      $.outputFormatHint.textContent =
+        "Для Markdown-файлов формат результата совпадает с исходным.";
+      return;
+    }
+    if ($.outputFormatMd.checked) {
+      $.outputFormatHint.textContent =
+        "Документ будет конвертирован в Markdown (через pandoc).";
+    } else {
+      $.outputFormatHint.textContent =
+        "Файл останется в формате .docx с заменами PII.";
+    }
   }
 
   function showError(message) {
@@ -167,8 +213,18 @@
     $.reviewBtn.hidden = true;
     $.errorEl.hidden = true;
 
+    var ext = fileExtension(file.name);
+    showUploadOptions(ext);
+
     var form = new FormData();
     form.append("file", file);
+    // For .md files we always send output_format=md; for .docx we
+    // honour the user checkbox.
+    if (ext === "docx" && $.outputFormatMd.checked) {
+      form.append("output_format", "md");
+    } else if (ext === "md") {
+      form.append("output_format", "md");
+    }
 
     var res;
     try {
@@ -222,10 +278,13 @@
 
     if (job.status === "completed") {
       stopPolling();
+      var ext = job.output_ext || job.source_ext;
       $.download.href = "/api/v1/documents/" + currentJobId + "/download";
+      $.download.download = "";
+      $.download.setAttribute("data-ext", ext);
       $.download.hidden = false;
       $.reviewBtn.hidden = false;
-      $.jobStatus.textContent = "Готово";
+      $.jobStatus.textContent = "Готово (" + ext + ")";
     } else if (job.status === "failed") {
       stopPolling();
       showError(job.error || "Обработка завершилась с ошибкой");
@@ -244,6 +303,8 @@
     $.download.removeAttribute("href");
     $.errorEl.hidden = true;
     $.fileInput.value = "";
+    $.uploadOptions.hidden = true;
+    $.outputFormatMd.checked = false;
   }
 
   // ------------------------------------------------------------------
@@ -539,6 +600,119 @@
 
     var comment = $.feedbackComment.value.trim();
     await postFeedback(actions, comment);
+  }
+
+  // Build the same actions list as submitFeedback but POST to
+  // ``/apply-feedback`` so the cleaned file is rewritten on disk.
+  function collectFeedbackActions() {
+    var rejectedIndices = {};
+    pendingActions.forEach(function (a) {
+      if (a.action === "reject" && a.original_span_index != null) {
+        rejectedIndices[a.original_span_index] = true;
+      }
+    });
+
+    var actions = [];
+    if (reviewData && reviewData.spans) {
+      reviewData.spans.forEach(function (sp, i) {
+        if (rejectedIndices[i]) {
+          actions.push({
+            action: "reject",
+            start: sp.start,
+            end: sp.end,
+            entity_type: sp.entity_type,
+            text: sp.text,
+            original_span_index: i,
+          });
+        } else {
+          actions.push({
+            action: "confirm",
+            start: sp.start,
+            end: sp.end,
+            entity_type: sp.entity_type,
+            text: sp.text,
+            original_span_index: i,
+          });
+        }
+      });
+    }
+
+    pendingActions.forEach(function (a) {
+      if (a.action === "add") {
+        actions.push(a);
+      }
+    });
+
+    return actions;
+  }
+
+  async function applyFeedbackToFile() {
+    if (!currentJobId) return;
+
+    var actions = collectFeedbackActions();
+    if (actions.length === 0) {
+      showApplyError("Нет правок для применения.");
+      return;
+    }
+
+    var comment = $.feedbackComment.value.trim();
+    var previousDisabled = $.applyFeedback.disabled;
+    $.applyFeedback.disabled = true;
+    clearApplyMessages();
+
+    try {
+      var res = await fetch(
+        "/api/v1/documents/" + currentJobId + "/apply-feedback",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ actions: actions, comment: comment }),
+        }
+      );
+      var body = null;
+      try {
+        body = await res.json();
+      } catch (_) {
+        body = null;
+      }
+      if (!res.ok) {
+        var msg = "Не удалось применить правки";
+        if (body && body.detail && body.detail.message) msg = body.detail.message;
+        showApplyError(msg);
+        return;
+      }
+      $.applySuccess.hidden = false;
+      $.applySuccess.textContent =
+        "Правки применены к итоговому файлу: " +
+        body.added + " добавлено, " +
+        body.rejected + " отклонено, " +
+        body.kept + " подтверждено.";
+
+      // Refresh the annotations so the user sees the updated state.
+      try {
+        var ann = await fetch("/api/v1/documents/" + currentJobId + "/annotations");
+        if (ann.ok) {
+          reviewData = await ann.json();
+          pendingActions = [];
+          renderPreview();
+        }
+      } catch (_) {}
+    } catch (e) {
+      showApplyError("Сеть: " + e.message);
+    } finally {
+      $.applyFeedback.disabled = previousDisabled;
+    }
+  }
+
+  function showApplyError(msg) {
+    $.applyError.hidden = false;
+    $.applyError.textContent = msg;
+  }
+
+  function clearApplyMessages() {
+    $.applySuccess.hidden = true;
+    $.applyError.hidden = true;
+    $.applySuccess.textContent = "Правки применены к итоговому файлу.";
   }
 
   async function postFeedback(actions, comment) {
