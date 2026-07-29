@@ -55,6 +55,9 @@ class Job(BaseModel):
     created_at: datetime = Field(default_factory=datetime.now)
     finished_at: datetime | None = None
     error: str | None = None
+    # Human-readable note about processing details (e.g. fallback from
+    # neural mode to mock mode).  Shown to the user in the job status UI.
+    processing_note: str | None = None
 
     @property
     def effective_output_ext(self) -> Literal["md", "docx"]:

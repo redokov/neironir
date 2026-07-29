@@ -28,6 +28,7 @@ class JobResponse(BaseModel):
     created_at: datetime
     finished_at: datetime | None
     error: str | None
+    processing_note: str | None = None
 
 
 class HealthResponse(BaseModel):

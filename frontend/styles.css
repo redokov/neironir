@@ -148,6 +148,14 @@ h1 {
   margin-top: 12px;
 }
 
+.warning {
+  color: #b45309;
+  background: #fffbeb;
+  padding: 8px 12px;
+  border-radius: 4px;
+  margin-top: 12px;
+}
+
 .success {
   color: #16a34a;
   background: #f0fdf4;

@@ -27,8 +27,10 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import re
 import shlex
+import threading
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
@@ -93,6 +95,9 @@ class TrainingState:
     progress: TrainingProgress = field(default_factory=TrainingProgress)
     error: str | None = None
     log_tail: list[str] = field(default_factory=list)
+    # The running subprocess object (not serialised). Used by
+    # ``stop_training`` for cross-platform termination.
+    _process: asyncio.subprocess.Process | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-ready snapshot for the HTTP layer."""
@@ -116,6 +121,10 @@ class TrainingState:
 
 _STATE: TrainingState = TrainingState()
 _STATE_LOCK = asyncio.Lock()
+# Lock protecting ``append_job_feedback_to_dataset`` — the JSONL
+# file is opened in append mode and concurrent writes from parallel
+# ``apply-feedback`` calls could interleave and corrupt the dataset.
+_DATASET_APPEND_LOCK = threading.Lock()
 
 
 def get_training_state() -> TrainingState:
@@ -275,8 +284,9 @@ def append_job_feedback_to_dataset(
         appended += 1
 
     if pending_records:
-        with dataset_path.open("a", encoding="utf-8") as out:
-            out.writelines(pending_records)
+        with _DATASET_APPEND_LOCK:
+            with dataset_path.open("a", encoding="utf-8") as out:
+                out.writelines(pending_records)
     return appended
 
 
@@ -313,6 +323,10 @@ class TrainingCommandSpec:
     output_dir: Path | None = None
     epochs: int = 3
     extra_args: list[str] = field(default_factory=list)
+    # Hard timeout for the subprocess — 3 hours by default.
+    # If the training hangs beyond this limit the process is
+    # terminated and the status is set to ``FAILED``.
+    timeout_seconds: int = 10800
 
 
 async def start_training(spec: TrainingCommandSpec) -> TrainingState:
@@ -357,13 +371,14 @@ async def start_training(spec: TrainingCommandSpec) -> TrainingState:
         _STATE.started_at = datetime.now(UTC)
         _STATE.finished_at = None
         _STATE.pid = proc.pid
+        _STATE._process = proc
         _STATE.dataset_path = str(spec.dataset_path)
         _STATE.checkpoint_path = str(spec.output_dir)
         _STATE.progress = TrainingProgress(total_epochs=spec.epochs)
         _STATE.error = None
         _STATE.log_tail.clear()
 
-        asyncio.create_task(_monitor(proc))
+        asyncio.create_task(_monitor(proc, timeout_seconds=spec.timeout_seconds))
 
         return _STATE
 
@@ -379,28 +394,21 @@ async def stop_training() -> bool:
         ``True`` if a process was signalled; ``False`` if nothing was
         running.
     """
-    state = get_training_state()
-    if state.status != TrainingStatus.RUNNING:
-        return False
-    if state.pid is None:
-        return False
-    try:
-        # ``kill`` is async on Unix and sync on Windows.  Both accept
-        # the process object — we discover the live proc via the PID
-        # through psutil would be heavy, so we just send to the PID
-        # directly using ``os.kill`` which works on Windows for the
-        # supported signals via the ``signal.CTRL_*`` family.  For the
-        # MVP we accept that cancellation is best-effort on Windows.
-        import os
-        import signal
-
-        os.kill(state.pid, signal.SIGTERM)
-        return True
-    except ProcessLookupError:
-        return False
+    async with _STATE_LOCK:
+        state = get_training_state()
+        if state.status != TrainingStatus.RUNNING:
+            return False
+        if state._process is None:
+            return False
+        try:
+            proc = state._process
+            proc.terminate()
+            return True
+        except ProcessLookupError:
+            return False
 
 
-async def _monitor(proc: asyncio.subprocess.Process) -> None:
+async def _monitor(proc: asyncio.subprocess.Process, timeout_seconds: int = 10800) -> None:
     """Read ``opf train`` output and update :data:`_STATE`.
 
     Runs as a background task for the lifetime of the subprocess.  On
@@ -409,6 +417,9 @@ async def _monitor(proc: asyncio.subprocess.Process) -> None:
 
     Both stdout and stderr are drained concurrently — if we only read
     one, the other may fill its pipe buffer and block the subprocess.
+
+    If the subprocess runs longer than ``timeout_seconds`` it is
+    terminated with SIGTERM and the status is set to ``FAILED``.
     """
     log_tail: list[str] = [""]
     log_tail.clear()
@@ -430,15 +441,27 @@ async def _monitor(proc: asyncio.subprocess.Process) -> None:
             _STATE.log_tail = list(log_tail)
 
             match = _PROGRESS_RE.search(text)
-            if match:
-                _STATE.progress.epoch = int(match.group(1))
-                with contextlib.suppress(ValueError):
-                    _STATE.progress.loss = float(match.group(2))
-
-            eta = _ETA_RE.search(text)
-            if eta:
-                h, m, s = (int(eta.group(1)), int(eta.group(2)), int(eta.group(3)))
-                _STATE.progress.eta_seconds = h * 3600 + m * 60 + s
+            eta_match = _ETA_RE.search(text)
+            if match or eta_match:
+                # Build a new snapshot atomically to avoid the reader
+                # seeing a partially-updated progress (e.g. epoch
+                # bumped but loss still from the previous epoch).
+                epoch = _STATE.progress.epoch
+                loss = _STATE.progress.loss
+                eta = _STATE.progress.eta_seconds
+                if match:
+                    epoch = int(match.group(1))
+                    with contextlib.suppress(ValueError):
+                        loss = float(match.group(2))
+                if eta_match:
+                    h, m_val, s_val = (int(eta_match.group(1)), int(eta_match.group(2)), int(eta_match.group(3)))
+                    eta = h * 3600 + m_val * 60 + s_val
+                _STATE.progress = TrainingProgress(
+                    epoch=epoch,
+                    total_epochs=_STATE.progress.total_epochs,
+                    loss=loss,
+                    eta_seconds=eta,
+                )
 
     async def _read_stderr() -> None:
         if proc.stderr is None:
@@ -452,10 +475,22 @@ async def _monitor(proc: asyncio.subprocess.Process) -> None:
                 stderr_lines.append(text)
 
     try:
-        await asyncio.gather(_read_stdout(), _read_stderr())
+        await asyncio.wait_for(
+            asyncio.gather(_read_stdout(), _read_stderr()),
+            timeout=timeout_seconds,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("opf train timed out after %s seconds — terminating", timeout_seconds)
+        proc.terminate()
+        await proc.wait()
+        _STATE.status = TrainingStatus.FAILED
+        _STATE.error = f"Training timed out after {timeout_seconds} seconds."
+        return
     except Exception as exc:  # noqa: BLE001 — we never want the monitor to crash
         logger.exception("training monitor crashed")
         _STATE.error = str(exc)
+        await proc.wait()
+        return
 
     await proc.wait()
 
@@ -483,6 +518,7 @@ async def start_training_from_feedback(
     opf_cmd: list[str],
     epochs: int,
     extra_args: list[str] | None = None,
+    timeout_seconds: int = 10800,
 ) -> TrainingState:
     """High-level helper used by the HTTP endpoint.
 
@@ -502,10 +538,12 @@ async def start_training_from_feedback(
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     combined_path = output_dir / "combined_dataset.jsonl"
+    tmp_combined = output_dir / ".combined_dataset.jsonl.tmp"
 
     seen: set[tuple[str, int, int, str]] = set()
     combined_count = 0
     combined_by_type: dict[str, int] = {}
+    pending_lines: list[str] = []
 
     def _append(record: dict) -> None:
         nonlocal combined_count
@@ -522,11 +560,21 @@ async def start_training_from_feedback(
         if key in seen:
             return
         seen.add(key)
-        with combined_path.open("a", encoding="utf-8") as out:
-            out.write(json.dumps(record, ensure_ascii=False) + "\n")
+        pending_lines.append(json.dumps(record, ensure_ascii=False) + "\n")
         combined_count += 1
         label = str(span.get("label", "unknown"))
         combined_by_type[label] = combined_by_type.get(label, 0) + 1
+
+    def _flush() -> None:
+        """Flush buffered lines into ``combined_path`` atomically.
+
+        Writes to a temporary file first, then ``os.replace()`` so
+        that a crash mid-write never leaves a half-written dataset.
+        """
+        if not pending_lines:
+            return
+        tmp_combined.write_text("".join(pending_lines), encoding="utf-8")
+        os.replace(str(tmp_combined), str(combined_path))
 
     # 1) Drain the cumulative file written by apply-feedback.
     cumulative_path = (
@@ -554,8 +602,12 @@ async def start_training_from_feedback(
     # fixed.  That's fine here: we read it back into the combined
     # stream, then delete it so the only file the trainer sees is
     # ``combined_path``.
+    #
+    # ``build_training_dataset`` is synchronous I/O-heavy — run it
+    # in the default thread pool to avoid blocking the event loop.
+    loop = asyncio.get_running_loop()
     try:
-        build_training_dataset(storage_dir, output_dir)
+        await loop.run_in_executor(None, build_training_dataset, storage_dir, output_dir)
     except FileNotFoundError:
         # No fresh feedback — that's fine.
         pass
@@ -578,6 +630,14 @@ async def start_training_from_feedback(
             except OSError:
                 pass
 
+    # Flush buffered lines to the combined dataset atomically.
+    _flush()
+
+    # Clean up the tmp file if it exists and is stale (e.g. crashed
+    # mid-write from a previous run).
+    with contextlib.suppress(OSError):
+        tmp_combined.unlink()
+
     if combined_count == 0:
         _STATE.status = TrainingStatus.FAILED
         _STATE.error = "no ADD actions in feedback"
@@ -595,6 +655,7 @@ async def start_training_from_feedback(
         output_dir=output_dir,
         epochs=epochs,
         extra_args=extra_args or [],
+        timeout_seconds=timeout_seconds,
     )
     return await start_training(spec)
 

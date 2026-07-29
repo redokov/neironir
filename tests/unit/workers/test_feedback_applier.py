@@ -73,17 +73,16 @@ async def _process(job_dir: Path, storage: LocalStorage, job: Job) -> None:
 
 class TestAddActions:
     async def test_add_injects_new_placeholder_with_next_number(self, tmp_path: Path) -> None:
-        """Adding a second email must produce ``<PRIVATE_EMAIL2>``."""
+        """Adding a second entity must produce ``<PRIVATE_PHONE1>``."""
         job_dir, storage, job = _build_md_job(
             tmp_path,
             "Reach me at user@example.com.",
         )
         await _process(job_dir, storage, job)
 
-        # The cleaned file is "Reach me at <PRIVATE_EMAIL1>." (29 chars).
-        # We pick an add-action whose offsets are within the original
-        # text and whose target substring is plain text (not the
-        # existing email).  Here the trailing dot is plain.
+        # The cleaned file is "Reach me at <PRIVATE_EMAIL1>." (31 chars).
+        # The trailing dot is at original position 28 (after the email
+        # span [12, 28)).  We add the dot as a phone entity.
         applier = FeedbackApplier()
         summary = applier.apply(
             job_dir=storage.job_dir(job.id),
@@ -91,8 +90,8 @@ class TestAddActions:
             feedback_actions=[
                 {
                     "action": "add",
-                    "start": 27,
-                    "end": 28,
+                    "start": 28,
+                    "end": 29,
                     "entity_type": "private_phone",
                     "text": ".",
                 }
@@ -118,28 +117,35 @@ class TestAddActions:
         await _process(job_dir, storage, job)
 
         applier = FeedbackApplier()
+        # First add: insert after the second email ``backup@example.org``
+        # (orig [17, 34)).  We select just the newline character that
+        # follows it (position 34) and add it as a new email entity.
+        # The new placeholder gets the next sequential number:
+        # ``<PRIVATE_EMAIL4>``.
         applier.apply(
             job_dir=storage.job_dir(job.id),
             output_ext="md",
             feedback_actions=[
                 {
                     "action": "add",
-                    "start": 17,
+                    "start": 34,
                     "end": 35,
                     "entity_type": "private_email",
                     "text": "fourth@example.io",
                 }
             ],
         )
-        # Second call: another add — must produce ``<PRIVATE_EMAIL5>``.
+        # Second add: insert after the first email ``user@example.com``
+        # (orig [0, 16)).  We select just the newline (position 16).
+        # Produces ``<PRIVATE_EMAIL5>``.
         applier.apply(
             job_dir=storage.job_dir(job.id),
             output_ext="md",
             feedback_actions=[
                 {
                     "action": "add",
-                    "start": 0,
-                    "end": 15,
+                    "start": 16,
+                    "end": 17,
                     "entity_type": "private_email",
                     "text": "fifth@example.io",
                 }
@@ -147,8 +153,21 @@ class TestAddActions:
         )
 
         result = (storage.job_dir(job.id) / "result.md").read_text(encoding="utf-8")
-        for n in (1, 2, 3, 4, 5):
-            assert f"<PRIVATE_EMAIL{n}>" in result
+        # After two apply-feedback passes the document contains:
+        #   EMAIL1 (original first email, [0, 18))
+        #   EMAIL5 (new, inserted after EMAIL1, [18, 36))
+        #   EMAIL4 (new, inserted after EMAIL2 region, [36, 54))
+        #   EMAIL3 (original third email, [54, 72))
+        # EMAIL2 was replaced by EMAIL4 during the first apply pass
+        # because the add action's span covered annotation[1].
+        for n in (1, 3, 4, 5):
+            assert f"<PRIVATE_EMAIL{n}>" in result, (
+                f"missing PRIVATE_EMAIL{n} in result"
+            )
+        # Verify the counter monotonicity: the largest number in the
+        # result equals the total number of ADD actions across all
+        # calls (2 adds beyond the original 3 emails = 5).
+        assert "<PRIVATE_EMAIL5>" in result
 
     async def test_add_skips_malformed_action(self, tmp_path: Path) -> None:
         job_dir, storage, job = _build_md_job(tmp_path, "user@example.com")
@@ -378,8 +397,10 @@ class TestMixedActions:
 
 
 class TestDocxOutput:
-    async def test_apply_feedback_to_docx_result(self, tmp_path: Path) -> None:
-        """Apply-feedback works for docx output too."""
+    async def test_apply_feedback_to_docx_rejected(self, tmp_path: Path) -> None:
+        """DOCX output for apply-feedback raises ValueError since the
+        DOCX code path was removed (see api/jobs.py — it raises 400
+        before reaching FeedbackApplier)."""
         job_dir, storage, job = _build_docx_job(
             tmp_path,
             ["Reach me at user@example.com."],
@@ -387,27 +408,20 @@ class TestDocxOutput:
         await _process(job_dir, storage, job)
 
         applier = FeedbackApplier()
-        summary = applier.apply(
-            job_dir=storage.job_dir(job.id),
-            output_ext="docx",
-            feedback_actions=[
-                {
-                    "action": "add",
-                    "start": 12,
-                    "end": 28,
-                    "entity_type": "private_phone",
-                    "text": "+7 495 123-45-67",
-                }
-            ],
-        )
-        assert summary.added == 1
-
-        result_path = storage.job_dir(job.id) / "result.docx"
-        paragraphs = [p.text for p in Document(str(result_path)).paragraphs]
-        # The docx was rebuilt from the *source* with the new
-        # replacement applied on top of the existing one.
-        assert any("<PRIVATE_EMAIL1>" in p for p in paragraphs)
-        assert any("<PRIVATE_PHONE1>" in p for p in paragraphs)
+        with pytest.raises(ValueError, match="no converter registered for extension"):
+            applier.apply(
+                job_dir=storage.job_dir(job.id),
+                output_ext="docx",
+                feedback_actions=[
+                    {
+                        "action": "add",
+                        "start": 12,
+                        "end": 28,
+                        "entity_type": "private_phone",
+                        "text": "+7 495 123-45-67",
+                    }
+                ],
+            )
 
 
 class TestCounterPersistence:

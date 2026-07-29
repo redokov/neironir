@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from neironir.converters.base import Replacement
+from neironir.storage.local import atomic_write
 
 
 class MarkdownConverter:
@@ -38,7 +39,9 @@ class MarkdownConverter:
         ordered = sorted(replacements, key=lambda r: r.start, reverse=True)
         for replacement in ordered:
             text = text[: replacement.start] + replacement.placeholder + text[replacement.end :]
-        target.write_text(text, encoding="utf-8")
+        # Use atomic_write so a crash mid-write never leaves a
+        # half-written result file (important for large documents).
+        atomic_write(target, text)
 
 
 __all__ = ["MarkdownConverter"]

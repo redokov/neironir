@@ -22,6 +22,7 @@
   var $ = {};
   var currentJobId = null;
   var pollTimer = null;
+  var abortController = null;
   var reviewData = null; // { text, spans }
   var pendingActions = []; // user edits not yet submitted
 
@@ -34,6 +35,7 @@
     $.jobStatus = document.getElementById("job-status");
     $.download = document.getElementById("download");
     $.errorEl = document.getElementById("error");
+    $.processingNote = document.getElementById("processing-note");
     $.resetBtn = document.getElementById("reset");
     $.reviewBtn = document.getElementById("review-btn");
     $.reviewSection = document.getElementById("review-section");
@@ -222,6 +224,10 @@
     }
 
     closeReview();
+    // Abort any in-flight poll from a previous upload.
+    if (abortController) abortController.abort();
+    abortController = null;
+
     $.jobSection.hidden = false;
     $.jobFilename.textContent = file.name;
     $.jobStatus.textContent = "Загружается…";
@@ -276,20 +282,36 @@
       stopPolling();
       return;
     }
+    // Capture the job ID at the start of the poll so that if the user
+    // quickly uploads a new file while this fetch is in flight, we
+    // don't write the *old* job's status over the *new* job's UI.
+    var myJobId = currentJobId;
+
+    // Create a new AbortController for this poll interval, abort the
+    // previous one if it's still running.
+    if (abortController) abortController.abort();
+    abortController = new AbortController();
+    var signal = abortController.signal;
+
     var res;
     try {
-      res = await fetch("/api/v1/documents/" + currentJobId);
+      res = await fetch("/api/v1/documents/" + myJobId, { signal: signal });
     } catch (e) {
+      if (e.name === "AbortError") return; // job was replaced, ignore
       stopPolling();
       showError("Не удалось получить статус задачи");
       return;
     }
+    // If the job was replaced while we were fetching, ignore the result.
+    if (myJobId !== currentJobId) return;
+
     if (!res.ok) {
       stopPolling();
       showError("Не удалось получить статус задачи");
       return;
     }
     var job = await res.json();
+    if (myJobId !== currentJobId) return;
     $.jobStatus.textContent = statusLabel(job.status);
 
     if (job.status === "completed") {
@@ -301,6 +323,11 @@
       $.download.hidden = false;
       $.reviewBtn.hidden = false;
       $.jobStatus.textContent = "Готово (" + ext + ")";
+      // Show processing note if present (e.g. fallback from neural to mock).
+      if (job.processing_note) {
+        $.processingNote.textContent = job.processing_note;
+        $.processingNote.hidden = false;
+      }
     } else if (job.status === "failed") {
       stopPolling();
       showError(job.error || "Обработка завершилась с ошибкой");
@@ -309,10 +336,8 @@
 
   function reset() {
     stopPolling();
-    closeReview();
-    currentJobId = null;
-    $.jobSection.hidden = true;
-    stopPolling();
+    if (abortController) abortController.abort();
+    abortController = null;
     closeReview();
     currentJobId = null;
     $.jobSection.hidden = true;
@@ -322,6 +347,8 @@
     $.reviewBtn.hidden = true;
     $.download.removeAttribute("href");
     $.errorEl.hidden = true;
+    $.processingNote.hidden = true;
+    $.processingNote.textContent = "";
     $.fileInput.value = "";
     $.uploadOptions.hidden = true;
     // The "Результат в MD-формате" checkbox keeps its previous
@@ -414,7 +441,8 @@
       }
     });
 
-    // Build highlighted HTML by walking the text and inserting <mark> spans.
+    // Build highlighted HTML by walking the text and creating <mark> spans
+    // using DOM APIs so attribute values are never interpolated unsafely.
     var allSpans = spans.map(function (s, i) {
       return { index: i, start: s.start, end: s.end, entity_type: s.entity_type, text: s.text, source: s.source, rejected: !!rejectedIndices[i] };
     });
@@ -423,26 +451,32 @@
     });
     allSpans.sort(function (a, b) { return a.start - b.start || a.end - b.end; });
 
-    var html = "";
+    // Clear the preview container and rebuild using DOM methods.
+    $.preview.textContent = "";
+
     var pos = 0;
     allSpans.forEach(function (sp) {
       if (sp.start > pos) {
-        html += escapeHtml(text.slice(pos, sp.start));
+        $.preview.appendChild(document.createTextNode(text.slice(pos, sp.start)));
       }
       if (sp.end > pos) {
+        var span = document.createElement("span");
         var cls = "entity-span type-" + sp.entity_type;
         if (sp.rejected) cls += " rejected";
         if (sp.added) cls += " added";
+        span.className = cls;
+        span.dataset.index = String(sp.index);
+        span.dataset.entity = sp.entity_type;
         var label = ENTITY_LABELS[sp.entity_type] || sp.entity_type;
-        html += '<span class="' + cls + '" data-index="' + sp.index + '" data-entity="' + sp.entity_type + '" title="' + label + '">' + escapeHtml(text.slice(Math.max(pos, sp.start), sp.end)) + "</span>";
+        span.title = label;
+        span.textContent = text.slice(Math.max(pos, sp.start), sp.end);
+        $.preview.appendChild(span);
         pos = sp.end;
       }
     });
     if (pos < text.length) {
-      html += escapeHtml(text.slice(pos));
+      $.preview.appendChild(document.createTextNode(text.slice(pos)));
     }
-
-    $.preview.innerHTML = html;
 
     // Attach click handler for rejecting spans.
     $.preview.querySelectorAll(".entity-span").forEach(function (el) {

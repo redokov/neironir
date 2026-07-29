@@ -25,19 +25,29 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from neironir.api.dependencies import get_settings
+from neironir.auth.dependencies import require_admin_auth, verify_csrf
 from neironir.config import Settings
 from neironir.privacy.feedback_analyzer import FeedbackAnalyzer, ProposedRule
+from neironir.privacy.rules import RuleBasedDetector
+from neironir.storage.local import atomic_write
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/v1/rules", tags=["rules"])
+router = APIRouter(
+    prefix="/api/v1/rules",
+    tags=["rules"],
+    # Rules management mutates the detector — require an admin session
+    # and a matching CSRF token for every endpoint.
+    dependencies=[Depends(require_admin_auth), Depends(verify_csrf)],
+)
 
 
 # ---------------------------------------------------------------------------
@@ -74,7 +84,8 @@ def _save_rule_meta(storage_dir: Path, rule: ProposedRule) -> str:
     if not rule.rule_id:
         rule.rule_id = str(uuid4())
     fpath = storage_dir / f"rule_{rule.rule_id}.json"
-    fpath.write_text(
+    atomic_write(
+        fpath,
         json.dumps(
             {
                 "rule_id": rule.rule_id,
@@ -90,7 +101,6 @@ def _save_rule_meta(storage_dir: Path, rule: ProposedRule) -> str:
             ensure_ascii=False,
             indent=2,
         ),
-        encoding="utf-8",
     )
     return rule.rule_id
 
@@ -128,7 +138,7 @@ async def get_stats(
 
 @router.post("/proposals")
 async def generate_proposals(
-    min_occurrences: int = 3,
+    min_occurrences: int = Query(3, ge=1, le=100),
     settings: Settings = Depends(get_settings),
 ) -> list[dict]:
     """Run feedback analysis and return new proposed rules.
@@ -192,7 +202,14 @@ async def approve_rule(
 
     rule["status"] = "approved"
     fpath = storage_dir / f"rule_{rule_id}.json"
-    fpath.write_text(json.dumps(rule, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write(
+        fpath,
+        json.dumps(rule, ensure_ascii=False, indent=2),
+    )
+
+    # Hot-reload the in-memory rule list so the cached
+    # ``CombinedPrivacyClient`` picks up this rule immediately.
+    RuleBasedDetector.load_dynamic_rules(settings.storage_dir)
 
     logger.info("rule %s approved: %s (%s)", rule_id, rule.get("entity_type"), rule.get("pattern"))
     return {"status": "approved", "rule_id": rule_id}
@@ -216,7 +233,10 @@ async def reject_rule(
 
     rule["status"] = "rejected"
     fpath = storage_dir / f"rule_{rule_id}.json"
-    fpath.write_text(json.dumps(rule, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write(
+        fpath,
+        json.dumps(rule, ensure_ascii=False, indent=2),
+    )
 
     logger.info("rule %s rejected", rule_id)
     return {"status": "rejected", "rule_id": rule_id}

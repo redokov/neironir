@@ -101,15 +101,31 @@ _PATTERN_TEMPLATES: ClassVar[dict[str, list[str]]] = {
 }
 
 
+# Minimum total digit characters required to generate a digit-only
+# pattern.  Shorter matches (e.g. 5-digit ZIP codes, 4-digit years)
+# would produce too many false positives.
+MIN_DIGIT_LEN: int = 8
+
+
 def _extract_digit_pattern(text: str) -> str | None:
     """Replace variable digit runs with ``\\d{N}`` quantifiers.
 
     ``ИНН 4810004427`` → ``\\bИНН\\s*\\d{10}\\b``
     ``+7 (495) 123-45-67`` → ``\\+7\\s*\\(\\d{3}\\)\\s*\\d{3}-\\d{2}-\\d{2}``
+
+    Digit-only patterns shorter than ``MIN_DIGIT_LEN`` are rejected to
+    avoid false-positive matches on common short numbers (years, codes).
     """
     # Remove excess whitespace
     text = re.sub(r"\s+", " ", text.strip())
     if not text:
+        return None
+
+    # Count total digits in the text.  If the digit portion is short
+    # (e.g. a 5-digit zip code or a season year like "2024"), forcing
+    # a fixed-length quantifier would match too broadly.
+    digit_count = sum(1 for ch in text if ch.isdigit())
+    if digit_count < MIN_DIGIT_LEN:
         return None
 
     # Tokenise: split into digit-runs and non-digit-runs
@@ -174,19 +190,21 @@ def _extract_org_pattern(text: str) -> str | None:
 def _extract_generic_regex(text: str, entity_type: str) -> str | None:
     """Generate a conservative regex pattern for ``text``.
 
-    This is the catch-all: escape any literal text, then collapse
-    whitespace runs and variable-length digit runs to quantifiers.
+    Escape literal text and replace digit runs (3+) with ``\\d{N}``.
+    The result is wrapped in ``\\b...\\b`` so it only matches whole-word
+    boundaries.
+
+    Multi-space runs are preserved as-is (``re.escape`` leaves spaces
+    unescaped in Python ≥ 3.7, so they match literally).
     """
     text = re.sub(r"\s+", " ", text.strip())
     if not text or len(text) < 4:
         return None
 
+    # 1. Escape regex special characters.
     escaped = re.escape(text)
-    # Replace digit runs with \d{N}
-    escaped = re.sub(r"\\d\{(\\d+)\}", lambda m: f"\\d{{{m.group(1)}}}", escaped)
-    # Collapse whitespace → \\s+
-    escaped = re.sub(r"\\ \*", r"\\s+", escaped)
-    # Replace literal 3+ consecutive digits with variable quantifier
+
+    # 2. Replace literal groups of 3+ digits with quantifiers.
     escaped = re.sub(r"\d{3,}", lambda m: f"\\d{{{len(m.group())}}}", escaped)
 
     return f"\\b{escaped}\\b"

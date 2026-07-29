@@ -253,7 +253,9 @@ class SubprocessPrivacyFilterClient:
             "--output-mode",
             "typed",
             "--decode-mode",
-            "viterbi",
+            "argmax",
+            "--n-ctx",
+            "512",
             "--device",
             self._device,
         ]
@@ -305,36 +307,49 @@ def _decode_opf_output(data: bytes) -> str:
     field encoded in the system's active code page (e.g. CP1251 for
     Russian Windows) rather than UTF-8. We try UTF-8 first and fall
     back to the system encoding.
+
+    Raises:
+        UnicodeDecodeError: If the data is neither valid UTF-8 nor
+            valid in the locale encoding (previously this function
+            silently replaced undecodable bytes with ``?``, which
+            would shift annotation offsets).
     """
     try:
         return data.decode("utf-8")
     except UnicodeDecodeError:
-        # ``locale.getpreferredencoding()`` returns e.g. ``cp1251``
-        # on Russian Windows.
         import locale
 
         encoding = locale.getpreferredencoding()
+        if encoding.upper() == "UTF-8":
+            # Safety check — if the locale says UTF-8 but the data
+            # is not valid UTF-8, propagate the error.
+            raise
         logger.debug("opf output is not valid UTF-8; falling back to %s", encoding)
-        return data.decode(encoding, errors="replace")
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError as exc:
+            raise UnicodeDecodeError(
+                exc.encoding, exc.object, exc.start, exc.end,
+                f"opf output is neither valid UTF-8 nor valid {encoding}. "
+                "Set PYTHONIOENCODING=utf-8 before launching the server.",
+            ) from exc
 
 
 def _find_json_end(text: str) -> int:
     """Return the position of the closing ``}`` of the top-level JSON object.
 
-    ``opf`` appends colour legend and colour-coded output after the
-    JSON payload. This function finds where the JSON ends by tracking
-    brace depth.
+    Uses ``json.JSONDecoder.raw_decode()`` which correctly handles
+    string literals containing ``{`` / ``}`` (unlike a brace-depth
+    counter which would break on those).
     """
-    depth = 0
-    for i, ch in enumerate(text):
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                return i + 1
-    # No balanced object found — let json.loads raise the error.
-    return len(text)
+    decoder = json.JSONDecoder()
+    try:
+        _, end = decoder.raw_decode(text)
+        return end
+    except json.JSONDecodeError:
+        # No valid JSON at the start of ``text`` — let the caller
+        # handle the error.
+        return len(text)
 
 
 __all__ = [

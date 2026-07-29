@@ -26,7 +26,6 @@ from pathlib import Path
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import FileResponse
 
 from neironir.admin.stats import (
     JobFeedbackSummary,
@@ -42,11 +41,19 @@ from neironir.admin.training import (
 )
 from neironir.api.dependencies import get_settings
 from neironir.api.schemas import ErrorResponse
+from neironir.auth.dependencies import require_admin_auth, verify_csrf
 from neironir.config import Settings
+from neironir.storage.local import atomic_write
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
+router = APIRouter(
+    prefix="/api/v1/admin",
+    tags=["admin"],
+    # Every endpoint on this router requires an admin session and
+    # (for unsafe methods) a matching CSRF token.
+    dependencies=[Depends(require_admin_auth), Depends(verify_csrf)],
+)
 
 
 # ---------------------------------------------------------------------------
@@ -167,13 +174,14 @@ async def start_training_endpoint(
             output_dir=output_dir,
             opf_cmd=opf_cmd,
             epochs=epochs,
+            timeout_seconds=settings.privacy_filter_timeout,
         )
     except RuntimeError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=ErrorResponse(
                 code="training_in_progress",
-                message=str(exc),
+                message="Training is already running.",
             ).model_dump(),
         ) from exc
     except Exception as exc:  # noqa: BLE001 — surface any startup error
@@ -182,7 +190,7 @@ async def start_training_endpoint(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=ErrorResponse(
                 code="training_failed",
-                message=str(exc),
+                message="Failed to start training. Check the server logs for details.",
             ).model_dump(),
         ) from exc
 
@@ -200,19 +208,6 @@ async def stop_training_endpoint() -> dict[str, object]:
     """Ask the running subprocess to terminate."""
     sent = await stop_training()
     return {"status": "stopping", "signal_sent": sent}
-
-
-# ---------------------------------------------------------------------------
-# Admin UI static page
-# ---------------------------------------------------------------------------
-
-
-@router.get("/ui", include_in_schema=False)
-async def admin_ui(
-    settings: Settings = Depends(get_settings),
-) -> FileResponse:
-    """Serve the admin dashboard HTML page."""
-    return FileResponse(settings.frontend_path / "admin.html")
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +239,85 @@ def _serialize_summary(summary: JobFeedbackSummary) -> dict[str, object]:
     }
 
 
+@router.get(
+    "/settings",
+    responses={500: {"model": ErrorResponse}},
+)
+async def get_runtime_settings(
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    """Return the currently active runtime settings (timeout, etc.)."""
+    timeout = settings.privacy_filter_timeout
+    try:
+        timeout = _load_runtime_timeout(Path(settings.storage_dir))
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+    return {
+        "privacy_filter_timeout": timeout,
+    }
+
+
+@router.put(
+    "/settings",
+    responses={422: {"model": ErrorResponse}},
+)
+async def update_runtime_settings(
+    payload: dict[str, object],
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    """Update runtime settings (timeout in seconds)."""
+    timeout_raw = payload.get("privacy_filter_timeout")
+    if timeout_raw is not None:
+        try:
+            timeout = int(timeout_raw)
+        except (ValueError, TypeError):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=ErrorResponse(
+                    code="invalid_timeout",
+                    message="privacy_filter_timeout must be an integer (seconds).",
+                ).model_dump(),
+            )
+        if timeout < 10 or timeout > 86400:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=ErrorResponse(
+                    code="invalid_timeout",
+                    message="privacy_filter_timeout must be between 10 and 86400 seconds.",
+                ).model_dump(),
+            )
+        _save_runtime_timeout(Path(settings.storage_dir), timeout)
+        # Reflect the change in the process-wide dependency cache so new
+        # subprocess builds pick up the new value immediately.
+        settings._runtime_timeout_override = timeout  # type: ignore[attr-defined]
+
+    return await get_runtime_settings(settings=settings)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+_RUNTIME_SETTINGS_FILE = "runtime_settings.json"
+
+
+def _load_runtime_timeout(storage_dir: Path) -> int:
+    """Read the runtime timeout override from storage, or return default."""
+    path = storage_dir / _RUNTIME_SETTINGS_FILE
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return int(data["privacy_filter_timeout"])
+
+
+def _save_runtime_timeout(storage_dir: Path, timeout: int) -> None:
+    """Persist the runtime timeout override."""
+    path = storage_dir / _RUNTIME_SETTINGS_FILE
+    atomic_write(
+        path,
+        json.dumps({"privacy_filter_timeout": timeout}, indent=2),
+    )
+
+
 def _opf_cmd(settings: Settings) -> list[str]:
     """Build the ``opf`` command tokenised for subprocess exec.
 
@@ -273,10 +347,15 @@ def _opf_cmd(settings: Settings) -> list[str]:
 
 
 def _now_iso() -> str:
-    """Return a filesystem-safe UTC timestamp."""
+    """Return a filesystem-safe UTC timestamp with microsecond precision.
+
+    Using microseconds ensures concurrent calls within the same second
+    get unique directory names, avoiding race conditions on the
+    ``combined_dataset.jsonl`` file.
+    """
     from datetime import datetime
 
-    return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%S_%fZ")
 
 
 def _not_found(detail: str) -> HTTPException:

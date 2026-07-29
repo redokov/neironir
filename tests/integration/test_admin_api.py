@@ -20,6 +20,10 @@ from neironir.main import create_app
 from neironir.privacy.client import MockPrivacyFilterClient
 from neironir.storage.local import LocalStorage
 
+# Override auth dependencies so integration tests don't need real cookies.
+from neironir.auth.dependencies import require_admin_auth, verify_csrf
+from neironir.auth.session import SESSION_PAYLOAD_KEY, sign_session_cookie
+
 
 def _write_feedback_job(
     storage_dir: Path,
@@ -104,13 +108,21 @@ def client_and_storage(
     # Build a settings object rooted at the tmp storage so the admin
     # endpoints (which read ``settings.storage_dir`` directly) operate
     # on the same directory as the per-job storage we just built.
-    real_settings = get_settings().model_copy(update={"storage_dir": str(storage_dir)})
+    real_settings = get_settings().model_copy(
+        update={
+            "storage_dir": str(storage_dir),
+            "session_secret": "test-secret-for-admin-tests",
+        }
+    )
     settings_handle = _SettingsHandle(real_settings)
 
     app = create_app()
     app.dependency_overrides[get_settings] = lambda: real_settings
     app.dependency_overrides[get_storage] = lambda: storage
     app.dependency_overrides[get_privacy] = lambda: privacy
+    # Bypass auth for integration tests — the e2e tests cover auth properly.
+    app.dependency_overrides[require_admin_auth] = lambda: {"is_admin": True, "user": "test"}
+    app.dependency_overrides[verify_csrf] = lambda: None
 
     reset_training_state()
 
@@ -363,14 +375,22 @@ class TestAdminUI:
         self, client_and_storage: tuple[TestClient, Path, _SettingsHandle]
     ) -> None:
         client, _s, _h = client_and_storage
+        # The AdminUIAuthMiddleware requires a valid signed cookie.
+        session_value = sign_session_cookie(
+            {SESSION_PAYLOAD_KEY: True, "user": "test"},
+            secret=_h._base.session_secret,
+        )
+        client.cookies.set("neironir_session", session_value)
         r = client.get("/admin")
         assert r.status_code == 200
         assert "Админка" in r.text
 
-    def test_admin_ui_api_path(
+    def test_admin_ui_api_path_removed(
         self, client_and_storage: tuple[TestClient, Path, _SettingsHandle]
     ) -> None:
+        """The /api/v1/admin/ui endpoint has been removed in favour of
+        ``GET /admin`` served via the ui router + middleware."""
         client, _s, _h = client_and_storage
         r = client.get("/api/v1/admin/ui")
-        assert r.status_code == 200
-        assert "Админка" in r.text
+        # Should 404 since the route no longer exists.
+        assert r.status_code == 404

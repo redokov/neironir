@@ -9,6 +9,56 @@
   var TRAINING_POLL_MS = 1500;
   var TRAINING_POLL_UNTIL_IDLE = false;
 
+  // --- CSRF helpers (double-submit cookie pattern) ---------------------
+  // The server sets a non-HttpOnly cookie named NEIRONIR_CSRF_COOKIE
+  // (default "neironir_csrf"). We read it and send the same value back
+  // in the X-CSRF-Token header on every unsafe request.
+  function getCsrfCookieName() {
+    var meta = document.querySelector("meta[name='neironir-csrf-cookie']");
+    return meta ? meta.getAttribute("content") : "neironir_csrf";
+  }
+
+  function readCookie(name) {
+    var prefix = name + "=";
+    var parts = document.cookie ? document.cookie.split(";") : [];
+    for (var i = 0; i < parts.length; i++) {
+      var c = parts[i].replace(/^\s+/, "");
+      if (c.indexOf(prefix) === 0) {
+        return decodeURIComponent(c.substring(prefix.length));
+      }
+    }
+    return "";
+  }
+
+  function csrfHeaders(extra) {
+    var headers = Object.assign({}, extra || {});
+    var token = readCookie(getCsrfCookieName());
+    if (token) {
+      headers["X-CSRF-Token"] = token;
+    }
+    return headers;
+  }
+
+  function fetchCsrf(url, options) {
+    options = options || {};
+    options.credentials = "same-origin";
+    if (options.method && options.method.toUpperCase() !== "GET") {
+      options.headers = csrfHeaders(options.headers || {});
+    }
+    return fetch(url, options).then(function (resp) {
+      if (resp.status === 401) {
+        window.location.href = "/login?next=" + encodeURIComponent(window.location.pathname);
+        throw new Error("unauthenticated");
+      }
+      if (resp.status === 403) {
+        // Could be CSRF mismatch — surface to the user.
+        alert("Доступ запрещён (403). Возможно, сессия истекла — войдите заново.");
+        throw new Error("forbidden");
+      }
+      return resp;
+    });
+  }
+
   var ENTITY_LABELS = {
     private_person: "ФИО",
     private_address: "Адрес",
@@ -77,6 +127,24 @@
     $.rulesGenerate.addEventListener("click", generateProposals);
     $.rulesRefresh.addEventListener("click", loadRules);
 
+    // Logout button
+    var logoutBtn = document.getElementById("logout-button");
+    if (logoutBtn) {
+      logoutBtn.addEventListener("click", function () {
+        var token = readCookie(getCsrfCookieName());
+        fetch("/logout", {
+          method: "POST",
+          headers: token ? { "X-CSRF-Token": token } : {},
+          credentials: "same-origin",
+          redirect: "manual",
+        }).then(function () {
+          window.location.href = "/login";
+        }).catch(function () {
+          window.location.href = "/login";
+        });
+      });
+    }
+
     loadStats();
     loadDocuments();
     loadRules();
@@ -90,7 +158,7 @@
   function loadStats() {
     var period = $.statsPeriod.value;
     var days = parseInt($.statsDays.value, 10) || 30;
-    fetch(
+    fetchCsrf(
       "/api/v1/admin/stats?period=" +
         encodeURIComponent(period) +
         "&days=" +
@@ -137,7 +205,7 @@
   // -------------------------------------------------------------------
 
   function loadDocuments() {
-    fetch("/api/v1/admin/documents?limit=50")
+    fetchCsrf("/api/v1/admin/documents?limit=50")
       .then(function (r) { return r.json(); })
       .then(function (rows) {
         if (!Array.isArray(rows) || rows.length === 0) {
@@ -175,7 +243,7 @@
 
   function openDetail(jobId) {
     currentJobId = jobId;
-    fetch("/api/v1/admin/documents/" + encodeURIComponent(jobId))
+    fetchCsrf("/api/v1/admin/documents/" + encodeURIComponent(jobId))
       .then(function (r) {
         return r.json().then(function (body) {
           return { status: r.status, body: body };
@@ -266,7 +334,7 @@
     clearError($.trainError);
     var epochs = parseInt($.trainEpochs.value, 10) || 3;
     $.trainStart.disabled = true;
-    fetch("/api/v1/admin/training/start?epochs=" + encodeURIComponent(epochs), {
+    fetchCsrf("/api/v1/admin/training/start?epochs=" + encodeURIComponent(epochs), {
       method: "POST",
     })
       .then(function (r) {
@@ -292,7 +360,7 @@
   }
 
   function stopTraining() {
-    fetch("/api/v1/admin/training/stop", { method: "POST" })
+    fetchCsrf("/api/v1/admin/training/stop", { method: "POST" })
       .then(function (r) { return r.json(); })
       .then(function (body) {
         $.trainStop.disabled = true;
@@ -306,7 +374,7 @@
   function pollTrainingStatus() {
     if (trainingPollTimer) return;
     trainingPollTimer = setInterval(function () {
-      fetch("/api/v1/admin/training/status")
+      fetchCsrf("/api/v1/admin/training/status")
         .then(function (r) { return r.json(); })
         .then(function (body) {
           applyTrainingStatus(body);
@@ -354,7 +422,7 @@
   // -------------------------------------------------------------------
 
   function loadRules() {
-    fetch("/api/v1/rules")
+    fetchCsrf("/api/v1/rules")
       .then(function (r) { return r.json(); })
       .then(function (rows) {
         if (!Array.isArray(rows) || rows.length === 0) {
@@ -408,7 +476,7 @@
 
   function generateProposals() {
     var min = parseInt($.rulesMin.value, 10) || 3;
-    fetch(
+    fetchCsrf(
       "/api/v1/rules/proposals?min_occurrences=" + encodeURIComponent(min),
       { method: "POST" }
     )
@@ -422,7 +490,7 @@
   }
 
   function decideRule(ruleId, decision) {
-    fetch("/api/v1/rules/" + encodeURIComponent(ruleId) + "/" + decision, {
+    fetchCsrf("/api/v1/rules/" + encodeURIComponent(ruleId) + "/" + decision, {
       method: "POST",
     })
       .then(function (r) {
@@ -512,9 +580,68 @@
     return escapeHtml(s);
   }
 
+  // --- Settings ------------------------------------------------------
+
+  var $settingsTimeout = document.getElementById("settings-timeout");
+  var $settingsSave = document.getElementById("settings-save");
+  var $settingsStatus = document.getElementById("settings-status");
+
+  function loadSettings() {
+    fetch("/api/v1/admin/settings", { credentials: "same-origin" })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data.privacy_filter_timeout != null) {
+          $settingsTimeout.value = data.privacy_filter_timeout;
+        }
+      })
+      .catch(function () { /* settings not critical */ });
+  }
+
+  function saveSettings() {
+    var timeout = parseInt($settingsTimeout.value, 10);
+    if (isNaN(timeout) || timeout < 10 || timeout > 86400) {
+      showStatus($settingsStatus, "Таймаут должен быть от 10 до 86400 секунд.", true);
+      return;
+    }
+    $settingsSave.disabled = true;
+    fetchCsrf("/api/v1/admin/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ privacy_filter_timeout: timeout }),
+    })
+      .then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      })
+      .then(function () {
+        showStatus($settingsStatus, "Сохранено (" + timeout + " с).", false);
+      })
+      .catch(function () {
+        showStatus($settingsStatus, "Ошибка сохранения.", true);
+      })
+      .finally(function () {
+        $settingsSave.disabled = false;
+      });
+  }
+
+  function showStatus(el, msg, isError) {
+    el.textContent = msg;
+    el.className = isError ? "error" : "success";
+    el.hidden = false;
+    setTimeout(function () { el.hidden = true; }, 4000);
+  }
+
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", init);
+    document.addEventListener("DOMContentLoaded", function () {
+      init();
+      loadSettings();
+    });
   } else {
     init();
+    loadSettings();
+  }
+
+  if ($settingsSave) {
+    $settingsSave.addEventListener("click", saveSettings);
   }
 })();

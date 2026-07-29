@@ -242,6 +242,23 @@ def _slice_elements(
             local_start = replacement.start - cumulative[start_idx]
             local_end = replacement.end - cumulative[start_idx]
             element_text = rewritten[start_idx]
+            # Clamp to element bounds — if the offset is out of range
+            # (e.g. due to a corrupted annotation), we silently clip
+            # rather than crash. The log warning below flags this.
+            if local_start < 0 or local_end > len(element_text):
+                clipped_count += 1
+                local_start = max(0, local_start)
+                local_end = min(len(element_text), local_end)
+                if clipped_count <= 3:
+                    logger.warning(
+                        "replacement %s clipped: start=%d end=%d "
+                        "elem_len=%d local=%d..%d",
+                        replacement.entity_type,
+                        replacement.start, replacement.end,
+                        len(element_text), local_start, local_end,
+                    )
+            # Allow both zero-length (insert) and positive-length
+            # (replace) replacements.
             rewritten[start_idx] = (
                 element_text[:local_start] + replacement.placeholder + element_text[local_end:]
             )
@@ -254,15 +271,16 @@ def _slice_elements(
                 rewritten[start_idx] = (
                     element_text[:local_start] + replacement.placeholder + element_text[local_end:]
                 )
-            clipped_count += 1
-            if clipped_count <= 3:
-                logger.warning(
-                    "replacement clipped at element boundary: "
-                    "start=%d (elem %d), end=%d (elem %d); "
-                    "applied to first element only",
-                    replacement.start, start_idx,
-                    replacement.end, end_idx,
-                )
+            else:
+                clipped_count += 1
+                if clipped_count <= 3:
+                    logger.warning(
+                        "replacement %s entirely outside element: "
+                        "start=%d end=%d elem_len=%d",
+                        replacement.entity_type,
+                        replacement.start, replacement.end,
+                        len(element_text),
+                    )
 
     return rewritten
 

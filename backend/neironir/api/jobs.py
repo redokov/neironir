@@ -33,6 +33,7 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse
 
+from neironir.admin.training import append_job_feedback_to_dataset
 from neironir.api.dependencies import get_privacy, get_settings, get_storage
 from neironir.api.schemas import (
     AnnotationSpan,
@@ -44,11 +45,10 @@ from neironir.api.schemas import (
     JobResponse,
     ModeInfoResponse,
 )
-from neironir.admin.training import append_job_feedback_to_dataset
 from neironir.config import Settings
 from neironir.domain.job import Job, JobStatus
 from neironir.privacy.client import PrivacyFilterClient
-from neironir.storage.local import LocalStorage
+from neironir.storage.local import LocalStorage, atomic_write
 from neironir.workers.feedback_applier import FeedbackApplier
 from neironir.workers.pipeline import run_job
 
@@ -151,6 +151,12 @@ async def upload(
             message="Only .md and .docx files are supported.",
         )
 
+    # Two-layer size protection:
+    # 1. ``MaxBodySizeMiddleware`` rejects requests with
+    #    Content-Length > max_file_size BEFORE the body is
+    #    parsed (catches the common case).
+    # 2. This post-parse check (``len(content)``) catches
+    #    chunked-encoding / forged-Content-Length requests.
     content = await file.read()
     if len(content) > settings.max_file_size:
         raise _http_error(
@@ -166,7 +172,7 @@ async def upload(
         raise _http_error(
             status.HTTP_400_BAD_REQUEST,
             code="unsupported_format",
-            message=str(exc),
+            message="Unsupported file format. Only .md and .docx files are accepted.",
         ) from exc
 
     source_ext = _ext_from_filename(filename)
@@ -315,8 +321,9 @@ async def submit_feedback(
         "comment": payload.comment,
     }
     feedback_path = storage.job_dir(job_id) / "feedback.json"
-    feedback_path.write_text(
-        json.dumps(feedback, ensure_ascii=False, indent=2), encoding="utf-8"
+    atomic_write(
+        feedback_path,
+        json.dumps(feedback, ensure_ascii=False, indent=2),
     )
 
     logger.info("feedback saved for job %s: %d actions", job_id, len(payload.actions))
@@ -366,14 +373,29 @@ async def apply_feedback(
             ),
         )
 
+    # DOCX output for apply-feedback is not supported.  The user must
+    # select ``output_format=md`` when uploading a ``.docx`` file in
+    # order to apply corrections.  See ``workers/feedback_applier.py``
+    # and variants/B in the code-review findings.
+    if job.effective_output_ext == "docx":
+        raise _http_error(
+            status.HTTP_400_BAD_REQUEST,
+            code="docx_output_not_supported",
+            message=(
+                "Apply-feedback is not available for DOCX output. "
+                "Re-upload the file with output_format=md to apply corrections."
+            ),
+        )
+
     feedback = {
         "job_id": str(job_id),
         "actions": [a.model_dump() for a in payload.actions],
         "comment": payload.comment,
     }
     feedback_path = storage.job_dir(job_id) / "feedback.json"
-    feedback_path.write_text(
-        json.dumps(feedback, ensure_ascii=False, indent=2), encoding="utf-8"
+    atomic_write(
+        feedback_path,
+        json.dumps(feedback, ensure_ascii=False, indent=2),
     )
 
     summary = FeedbackApplier().apply(

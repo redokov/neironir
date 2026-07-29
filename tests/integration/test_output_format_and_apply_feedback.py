@@ -241,22 +241,24 @@ class TestApplyFeedbackEndpoint:
         client, storage_dir = client_and_storage
         r = client.post(
             "/api/v1/documents/",
-            files={"file": ("doc.md", b"user@example.com", "text/markdown")},
+            files={"file": ("doc.md", b"user@example.com ", "text/markdown")},
         )
         job_id = r.json()["id"]
         _wait_completed(client, job_id)
 
-        # Add a new phone (an offset that maps to plain text).  The
-        # source text is 16 chars; offset 14..16 is "om" — a plain
-        # suffix that's not part of the email placeholder.
+        # Add a new phone selecting the trailing space after the
+        # email.  Source text is "user@example.com " (17 chars).
+        # The email span is [0, 16); the space at position 16 is
+        # plain text.  Selecting it maps to after the placeholder
+        # and inserts a new phone entity.
         payload = {
             "actions": [
                 {
                     "action": "add",
-                    "start": 14,
-                    "end": 16,
+                    "start": 16,
+                    "end": 17,
                     "entity_type": "private_phone",
-                    "text": "om",
+                    "text": " ",
                 }
             ],
             "comment": None,

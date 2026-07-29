@@ -38,7 +38,9 @@ lower-priority span is dropped. The priority order is:
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 import re
+import threading
 from typing import ClassVar
 
 from neironir.domain.entity_type import EntityType
@@ -64,6 +66,11 @@ class RuleBasedDetector:
     # Order within this list determines rule priority — earlier rules
     # win over later rules on overlap.
     RULES: ClassVar[list[tuple[EntityType, re.Pattern[str], str]]] = []
+
+    # Lock protecting ``_DYNAMIC_RULES`` against concurrent read/write
+    # from async endpoints (e.g. ``approve_rule`` in ``api/rules.py``
+    # may race with ``detect()`` running in another coroutine).
+    _dynamic_rules_lock: ClassVar[threading.Lock] = threading.Lock()
 
     # Compiled on import — see module-level ``_compile_rules()``.
     @classmethod
@@ -151,6 +158,8 @@ class RuleBasedDetector:
         cls.RULES = patterns
 
     def __init__(self) -> None:
+        """Initialise the rule-based detector."""
+        self._known_organisations: list[str] = []
         # Lazy-init class-level rules on first instance creation.
         # This avoids import-time side effects while keeping the
         # compiled patterns cached for the process lifetime.
@@ -158,22 +167,19 @@ class RuleBasedDetector:
 
     # -- Dictionary matcher (organisation / bank names) -------------------
 
-    _KNOWN_ORGANISATIONS: ClassVar[list[str]] = []
-
-    @classmethod
-    def add_organisation(cls, name: str) -> None:
+    def add_organisation(self, name: str) -> None:
         """Add an organisation name to the dictionary matcher.
 
         This method is used by the feedback loop (Phase 2) to inject
         organisation names learned from user corrections.
         """
-        if name not in cls._KNOWN_ORGANISATIONS:
-            cls._KNOWN_ORGANISATIONS.append(name)
+        if name not in self._known_organisations:
+            self._known_organisations.append(name)
 
     def _match_dictionaries(self, text: str) -> list[EntitySpan]:
         """Match known organisation and bank names via exact substring search."""
         spans: list[EntitySpan] = []
-        for org in self._KNOWN_ORGANISATIONS:
+        for org in self._known_organisations:
             start = 0
             while True:
                 pos = text.find(org, start)
@@ -199,13 +205,13 @@ class RuleBasedDetector:
             The number of rules loaded.
         """
         import json
-        from pathlib import Path
 
         rules_dir = Path(storage_dir) / "rules"
         if not rules_dir.is_dir():
             return 0
 
-        cls._DYNAMIC_RULES.clear()
+        with cls._dynamic_rules_lock:
+            cls._DYNAMIC_RULES.clear()
         count = 0
         for fpath in sorted(rules_dir.glob("rule_*.json")):
             try:
@@ -233,7 +239,8 @@ class RuleBasedDetector:
                 logger.warning("dynamic rule %s: invalid regex %r — %s", fpath.stem, pattern_str, exc)
                 continue
 
-            cls._DYNAMIC_RULES.append((entity_type, pattern, f"dynamic:{fpath.stem}"))
+            with cls._dynamic_rules_lock:
+                cls._DYNAMIC_RULES.append((entity_type, pattern, f"dynamic:{fpath.stem}"))
             count += 1
 
         if count:
@@ -253,7 +260,8 @@ class RuleBasedDetector:
         Returns:
             A list of :class:`EntitySpan` instances, sorted by start offset.
         """
-        all_rules = list(self.RULES) + list(self._DYNAMIC_RULES)
+        with self._dynamic_rules_lock:
+            all_rules = list(self.RULES) + list(self._DYNAMIC_RULES)
         candidates: list[EntitySpan] = []
         for entity_type, pattern, _name in all_rules:
             for match in pattern.finditer(text):

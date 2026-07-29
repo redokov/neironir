@@ -4,6 +4,7 @@
     <meta charset="utf-8">
     <title>neironir — Админка</title>
     <link rel="stylesheet" href="/static/styles.css">
+    <meta name="neironir-csrf-cookie" content="neironir_csrf">
   </head>
   <body>
     <main class="container admin-container">
@@ -11,6 +12,7 @@
         <h1>Админка</h1>
         <nav class="admin-nav">
           <a href="/" class="link-button">← К загрузке документов</a>
+          <button type="button" id="logout-button" class="link-button">Выйти</button>
         </nav>
       </header>
 
@@ -52,6 +54,21 @@
           <summary>По периодам</summary>
           <div id="stats-buckets" class="bucket-list">—</div>
         </details>
+      </section>
+
+      <!-- Settings section -->
+      <section id="settings-section" class="card">
+        <h2>Настройки</h2>
+        <div class="settings-controls">
+          <label for="settings-timeout">Таймаут нейронной модели (сек):</label>
+          <input id="settings-timeout" type="number" min="10" max="86400" value="600">
+          <span class="hint" id="settings-timeout-desc">
+            Если модель не отвечает за это время, задача дообрабатывается
+            в упрощённом режиме (mock).
+          </span>
+          <button type="button" id="settings-save" class="button primary">Сохранить</button>
+          <span id="settings-status" class="success" hidden></span>
+        </div>
       </section>
 
       <!-- Training section -->

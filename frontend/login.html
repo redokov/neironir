@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>neironir — Вход</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <main class="container login-container">
+      <h1>Вход в админку</h1>
+      <p class="hint">Введите логин и пароль, заданные в <code>NEIRONIR_ADMIN_USER</code> и <code>NEIRONIR_ADMIN_PASSWORD</code> на сервере.</p>
+
+      <form id="login-form" class="login-form" method="post" action="/login" autocomplete="off">
+        <label for="username">Логин</label>
+        <input id="username" name="username" type="text" required autofocus autocomplete="username">
+
+        <label for="password">Пароль</label>
+        <input id="password" name="password" type="password" required autocomplete="current-password">
+
+        <p id="login-error" class="error" hidden></p>
+
+        <button type="submit" class="button primary">Войти</button>
+      </form>
+
+      <p class="hint">
+        <a href="/" class="link-button">← На главную</a>
+      </p>
+    </main>
+
+    <script src="/static/login.js" defer></script>
+  </body>
+</html>

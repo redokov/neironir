@@ -29,13 +29,13 @@ from neironir.converters.base import DocumentConverter, Replacement
 from neironir.converters.docx import DocxConverter
 from neironir.converters.markdown import MarkdownConverter
 from neironir.domain.entity_type import TEMPLATE_FORMAT, EntityType
+from neironir.storage.local import atomic_write
 
 logger = logging.getLogger(__name__)
 
 
 _CONVERTERS: dict[str, DocumentConverter] = {
     "md": MarkdownConverter(),
-    "docx": DocxConverter(),
 }
 
 
@@ -182,9 +182,9 @@ def _map_original_offset(
             orig_cursor += plain_len
             cleaned_cursor += plain_len
         # Placeholder segment.
-        if orig_cursor <= orig_offset <= al.orig_end:
+        if orig_cursor <= orig_offset < al.orig_end:
             return al.cleaned_start
-        if orig_offset > al.orig_end:
+        if orig_offset >= al.orig_end:
             orig_cursor = al.orig_end
             cleaned_cursor = al.cleaned_end
 
@@ -338,7 +338,7 @@ class FeedbackApplier:
                         + replacement.placeholder
                         + text[replacement.end :]
                     )
-                result_path.write_text(text, encoding="utf-8")
+                atomic_write(result_path, text)  # atomic write prevents partial files on crash
             else:
                 # DOCX output: rebuild from the original source with
                 # the initial pipeline replacements + user corrections

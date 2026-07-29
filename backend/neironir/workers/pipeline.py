@@ -25,8 +25,8 @@ from neironir.converters.docx import DocxConverter
 from neironir.converters.markdown import MarkdownConverter
 from neironir.domain.job import JobStatus
 from neironir.domain.placeholder import PlaceholderCounter
-from neironir.privacy.client import EntitySpan, PrivacyFilterClient
-from neironir.storage.local import LocalStorage
+from neironir.privacy.client import EntitySpan, MockPrivacyFilterClient, PrivacyFilterClient, PrivacyFilterError
+from neironir.storage.local import LocalStorage, atomic_write
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +89,20 @@ async def run_job(
         # Persist the extracted text for the feedback UI.
         _save_extracted_text(storage, job_id, text)
 
-        spans = await privacy.annotate(text)
+        try:
+            spans = await privacy.annotate(text)
+        except (NotImplementedError, FileNotFoundError, PrivacyFilterError) as exc:
+            logger.warning(
+                "subprocess privacy filter failed for job %s (%s: %s) — "
+                "falling back to mock mode",
+                job_id, type(exc).__name__, exc,
+            )
+            job.processing_note = (
+                "Нейронная модель не ответила за отведённое время. "
+                "Использован упрощённый режим (mock)."
+            )
+            mock = MockPrivacyFilterClient()
+            spans = await mock.annotate(text)
 
         # Persist annotations for the feedback UI.
         _save_annotations(storage, job_id, spans, text)
@@ -104,7 +117,7 @@ async def run_job(
         # use that as the source.
         if source_ext == "docx" and output_ext == "md":
             md_source_path = storage.job_dir(job_id) / "extracted.md"
-            md_source_path.write_text(text, encoding="utf-8")
+            atomic_write(md_source_path, text)
             target_converter.build(md_source_path, target_path, replacements)
         else:
             target_converter.build(source_path, target_path, replacements)
@@ -124,7 +137,7 @@ async def run_job(
 def _save_extracted_text(storage: LocalStorage, job_id: UUID, text: str) -> None:
     """Write the extracted plain text to ``extracted_text.txt``."""
     path = storage.job_dir(job_id) / "extracted_text.txt"
-    path.write_text(text, encoding="utf-8")
+    atomic_write(path, text)
     logger.debug("saved extracted_text.txt for job %s (%d chars)", job_id, len(text))
 
 
@@ -151,7 +164,7 @@ def _save_annotations(
         for span in spans
     ]
     path = storage.job_dir(job_id) / "annotations.json"
-    path.write_text(json.dumps(annotations, ensure_ascii=False), encoding="utf-8")
+    atomic_write(path, json.dumps(annotations, ensure_ascii=False))
     logger.debug("saved annotations.json for job %s (%d spans)", job_id, len(spans))
 
 
