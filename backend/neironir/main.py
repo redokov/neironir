@@ -20,7 +20,7 @@ from neironir.config import Settings
 
 def create_app() -> FastAPI:
     """Build and return the FastAPI application instance."""
-    app = FastAPI(title="neironir", version="0.0.1")
+    app = FastAPI(title="neironir", version="0.1.0")
 
     # Keep the health endpoint from phase 0/2. The dependency injection
     # for the rest of the app is wired via ``Depends`` so the route

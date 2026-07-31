@@ -1,6 +1,6 @@
 [project]
 name = "neironir"
-version = "0.0.1"
+version = "0.1.0"
 description = "Local web service for redacting personal data from text documents."
 requires-python = ">=3.11"
 dependencies = [
