@@ -40,13 +40,7 @@
     $.reviewBtn = document.getElementById("review-btn");
     $.reviewSection = document.getElementById("review-section");
     $.preview = document.getElementById("preview");
-    $.confirmAll = document.getElementById("confirm-all");
-    $.submitFeedback = document.getElementById("submit-feedback");
     $.applyFeedback = document.getElementById("apply-feedback");
-    $.skipReview = document.getElementById("skip-review");
-    $.commentSection = document.getElementById("comment-section");
-    $.feedbackComment = document.getElementById("feedback-comment");
-    $.feedbackSuccess = document.getElementById("feedback-success");
     $.applySuccess = document.getElementById("apply-success");
     $.applyError = document.getElementById("apply-error");
     $.uploadOptions = document.getElementById("upload-options");
@@ -95,10 +89,7 @@
     // Job section handlers
     $.resetBtn.addEventListener("click", reset);
     $.reviewBtn.addEventListener("click", openReview);
-    $.confirmAll.addEventListener("click", confirmAll);
-    $.submitFeedback.addEventListener("click", submitFeedback);
     $.applyFeedback.addEventListener("click", applyFeedbackToFile);
-    $.skipReview.addEventListener("click", closeReview);
 
     // Reset the output-format checkbox when the user picks a new file
     $.outputFormatMd.addEventListener("change", function () {
@@ -400,10 +391,7 @@
 
     $.reviewSection.hidden = false;
     $.preview.textContent = "Загрузка...";
-    $.confirmAll.hidden = false;
-    $.submitFeedback.hidden = true;
-    $.commentSection.hidden = true;
-    $.feedbackSuccess.hidden = true;
+    clearApplyMessages();
 
     try {
       var res = await fetch("/api/v1/documents/" + currentJobId + "/annotations");
@@ -411,6 +399,7 @@
       reviewData = await res.json();
       pendingActions = [];
       renderPreview();
+      updateApplyButton();
     } catch (e) {
       $.preview.textContent = "Не удалось загрузить данные для проверки: " + e.message;
     }
@@ -509,7 +498,7 @@
       });
       el.classList.add("rejected");
     }
-    updateSubmitButton();
+    updateApplyButton();
   }
 
   var _toolbarActive = false;
@@ -644,84 +633,53 @@
       text: text,
       original_span_index: null,
     });
-    updateSubmitButton();
+    updateApplyButton();
     renderPreview(); // re-render to show the new span
   }
 
-  function updateSubmitButton() {
-    $.submitFeedback.hidden = pendingActions.length === 0;
-    $.commentSection.hidden = pendingActions.length === 0;
+  function updateApplyButton() {
+    if (!$.applyFeedback) return;
+    var hasSpans = !!(reviewData && reviewData.spans && reviewData.spans.length > 0);
+    var hasActions = pendingActions.length > 0;
+    $.applyFeedback.disabled = !(hasSpans || hasActions);
+  }
+
+  // Mirror of PlaceholderCounter.next() on the server side. Picks the
+  // next free <TYPE_N> for the given entity_type by scanning the current
+  // text for the largest existing N. ``extraTaken`` lists numbers already
+  // issued in the same batch (multiple add-actions of one type), so each
+  // add gets a unique placeholder. See backend/neironir/domain/placeholder.py.
+  function nextPlaceholderForType(text, entityType, extraTaken) {
+    var typeToPrefix = {
+      private_person: "PRIVATE_PERSON",
+      private_address: "PRIVATE_ADDRESS",
+      private_email: "PRIVATE_EMAIL",
+      private_phone: "PRIVATE_PHONE",
+      private_date: "PRIVATE_DATE",
+      private_url: "PRIVATE_URL",
+      account_number: "ACCOUNT_NUMBER",
+      secret: "SECRET",
+    };
+    var prefix = typeToPrefix[entityType] || "UNKNOWN";
+    var re = new RegExp("<" + prefix + "(\\d+)>", "g");
+    var maxN = 0;
+    var m;
+    while ((m = re.exec(text)) !== null) {
+      var n = parseInt(m[1], 10);
+      if (n > maxN) maxN = n;
+    }
+    (extraTaken || []).forEach(function (taken) {
+      if (taken > maxN) maxN = taken;
+    });
+    return "<" + prefix + (maxN + 1) + ">";
   }
 
   // ------------------------------------------------------------------
-  //  Submit feedback
+  //  Apply feedback
   // ------------------------------------------------------------------
 
-  async function confirmAll() {
-    if (!reviewData || !currentJobId) return;
-
-    // Mark all spans as confirmed
-    var actions = reviewData.spans.map(function (sp, i) {
-      return {
-        action: "confirm",
-        start: sp.start,
-        end: sp.end,
-        entity_type: sp.entity_type,
-        text: sp.text,
-        original_span_index: i,
-      };
-    });
-
-    await postFeedback(actions, "");
-  }
-
-  async function submitFeedback() {
-    if (!reviewData || !currentJobId) return;
-
-    // Confirm all non-rejected spans first
-    var rejectedIndices = {};
-    pendingActions.forEach(function (a) {
-      if (a.action === "reject" && a.original_span_index != null) {
-        rejectedIndices[a.original_span_index] = true;
-      }
-    });
-
-    var actions = [];
-    reviewData.spans.forEach(function (sp, i) {
-      if (rejectedIndices[i]) {
-        actions.push({
-          action: "reject",
-          start: sp.start,
-          end: sp.end,
-          entity_type: sp.entity_type,
-          text: sp.text,
-          original_span_index: i,
-        });
-      } else {
-        actions.push({
-          action: "confirm",
-          start: sp.start,
-          end: sp.end,
-          entity_type: sp.entity_type,
-          text: sp.text,
-          original_span_index: i,
-        });
-      }
-    });
-
-    // Add user-added spans
-    pendingActions.forEach(function (a) {
-      if (a.action === "add") {
-        actions.push(a);
-      }
-    });
-
-    var comment = $.feedbackComment.value.trim();
-    await postFeedback(actions, comment);
-  }
-
-  // Build the same actions list as submitFeedback but POST to
-  // ``/apply-feedback`` so the cleaned file is rewritten on disk.
+  // Build the list of actions to send to /apply-feedback so the
+  // cleaned file is rewritten on disk.
   function collectFeedbackActions() {
     var rejectedIndices = {};
     pendingActions.forEach(function (a) {
@@ -773,7 +731,6 @@
       return;
     }
 
-    var comment = $.feedbackComment.value.trim();
     var previousDisabled = $.applyFeedback.disabled;
     $.applyFeedback.disabled = true;
     clearApplyMessages();
@@ -784,7 +741,7 @@
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ actions: actions, comment: comment }),
+          body: JSON.stringify({ actions: actions }),
         }
       );
       var body = null;
@@ -814,49 +771,142 @@
         body.kept + " подтверждено." +
         trainingInfo;
 
-      // Refresh the annotations so the user sees the updated state.
-      // Crucially, keep the user's manual ADD selections visible:
-      // after apply-feedback the adds have been written to the file,
-      // but the annotations endpoint still doesn't know about them.
-      // We remove from pendingActions the actions that were just
-      // applied (add/reject) and keep any remainder (e.g. a reject
-      // that failed because the span wasn't found).
-      var submitted = actions;  // the action list we sent
-      var submittedKeys = {};
+      // Locally apply the changes to reviewData so the preview reflects
+      // the same state as the rewritten result file. The server doesn't
+      // return updated annotations, and re-fetching GET /annotations
+      // would return the stale original data (annotations.json is not
+      // rewritten by apply-feedback). See spec
+      // .ai/sdd/specs/001-apply-feedback-to-result/design.md §3.1.
+      var submitted = actions;
+      var submittedAddKeys = {};
+      var submittedRejectIndices = {};
       submitted.forEach(function (a) {
-        // Build a key that identifies this action uniquely:
-        // "add:start:end:type" or "reject:idx"
         if (a.action === "add") {
-          submittedKeys["add:" + a.start + ":" + a.end + ":" + a.entity_type] = true;
-        } else if (a.action === "reject" && a.original_span_index != null) {
-          submittedKeys["reject:" + a.original_span_index] = true;
-        } else if (a.action === "confirm" && a.original_span_index != null) {
-          submittedKeys["confirm:" + a.original_span_index] = true;
+          submittedAddKeys[
+            "add:" + a.start + ":" + a.end + ":" + a.entity_type
+          ] = true;
+        } else if (
+          a.action === "reject" &&
+          a.original_span_index != null
+        ) {
+          submittedRejectIndices[a.original_span_index] = a;
         }
       });
+
+      if (reviewData) {
+        // Drop rejected spans from reviewData.spans; track the original
+        // text so we can splice it back into reviewData.text below.
+        var keptSpans = [];
+        var rejectedSplices = []; // {start, end, text}
+        reviewData.spans.forEach(function (sp, i) {
+          if (submittedRejectIndices[i]) {
+            var action = submittedRejectIndices[i];
+            rejectedSplices.push({
+              start: sp.start,
+              end: sp.end,
+              text: action.text != null ? action.text : sp.text,
+            });
+          } else {
+            keptSpans.push(sp);
+          }
+        });
+        reviewData.spans = keptSpans;
+
+        // Apply splices in reverse so earlier offsets stay valid.
+        rejectedSplices.sort(function (a, b) {
+          return b.start - a.start;
+        });
+
+        // Insert new placeholders for add-actions and remove the
+        // underlying original text. The placeholder is built using
+        // nextPlaceholderForType() which mirrors the server's
+        // PlaceholderCounter logic (see backend/neironir/domain/placeholder.py).
+        var addSplices = []; // {start, end, replacement, entity_type, text}
+        var batchTaken = {}; // entity_type -> numbers issued in this batch
+        submitted.forEach(function (a) {
+          if (a.action === "add") {
+            var taken = batchTaken[a.entity_type] || [];
+            var replacement = nextPlaceholderForType(
+              reviewData.text,
+              a.entity_type,
+              taken
+            );
+            // Extract the number from the placeholder to seed the batch
+            // counter for subsequent add-actions of the same type.
+            var m2 = replacement.match(/(\d+)/);
+            if (m2) taken.push(parseInt(m2[1], 10));
+            batchTaken[a.entity_type] = taken;
+            addSplices.push({
+              start: a.start,
+              end: a.end,
+              replacement: replacement,
+              entity_type: a.entity_type,
+              text: a.text,
+            });
+          }
+        });
+        // Apply all splices (rejected + add) together, sorted by start desc.
+        var allSplices = rejectedSplices
+          .map(function (s) {
+            return {
+              start: s.start,
+              end: s.end,
+              replacement: s.text,
+            };
+          })
+          .concat(
+            addSplices.map(function (s) {
+              return {
+                start: s.start,
+                end: s.end,
+                replacement: s.replacement,
+              };
+            })
+          );
+        allSplices.sort(function (a, b) {
+          return b.start - a.start;
+        });
+        var newText = reviewData.text;
+        allSplices.forEach(function (s) {
+          newText =
+            newText.slice(0, s.start) + s.replacement + newText.slice(s.end);
+        });
+        reviewData.text = newText;
+
+        // Append the new add-spans to reviewData.spans so renderPreview
+        // highlights them. Positions are recomputed by re-walking the
+        // placeholder regex in renderPreview, so approximate positions
+        // are fine here.
+        addSplices.forEach(function (s) {
+          var idx = newText.indexOf(s.replacement);
+          reviewData.spans.push({
+            start: idx,
+            end: idx + s.replacement.length,
+            entity_type: s.entity_type,
+            text: s.replacement,
+            source: "user",
+          });
+        });
+      }
+
+      // Drop submitted add/reject actions from pendingActions; keep any
+      // that were added after this apply call.
       // Keep only pending actions that were NOT in the just-submitted
       // batch — these are actions the user added *after* the last
       // apply-feedback call (they'll be submitted next time).
       pendingActions = pendingActions.filter(function (pa) {
         if (pa.action === "add") {
           var k = "add:" + pa.start + ":" + pa.end + ":" + pa.entity_type;
-          return !submittedKeys[k];
+          return !submittedAddKeys[k];
         }
         if (pa.action === "reject" && pa.original_span_index != null) {
-          var k2 = "reject:" + pa.original_span_index;
-          return !submittedKeys[k2];
+          return !submittedRejectIndices[pa.original_span_index];
         }
-        // Never keep confirms in pendingActions (they're ephemeral).
         return false;
       });
 
-      try {
-        var ann = await fetch("/api/v1/documents/" + currentJobId + "/annotations");
-        if (ann.ok) {
-          reviewData = await ann.json();
-          renderPreview();
-        }
-      } catch (_) {}
+      updateApplyButton();
+      renderPreview();
     } catch (e) {
       showApplyError("Сеть: " + e.message);
     } finally {
@@ -873,30 +923,6 @@
     $.applySuccess.hidden = true;
     $.applyError.hidden = true;
     $.applySuccess.textContent = "Правки применены к итоговому файлу.";
-  }
-
-  async function postFeedback(actions, comment) {
-    if (!currentJobId) return;
-
-    try {
-      var res = await fetch("/api/v1/documents/" + currentJobId + "/feedback", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ actions: actions, comment: comment }),
-      });
-      if (!res.ok) throw new Error("HTTP " + res.status);
-    } catch (e) {
-      alert("Не удалось сохранить правки: " + e.message);
-      return;
-    }
-
-    // Show success message
-    $.feedbackSuccess.hidden = false;
-    $.confirmAll.hidden = true;
-    $.submitFeedback.hidden = true;
-    $.skipReview.hidden = true;
-    $.commentSection.hidden = true;
-    pendingActions = [];
   }
 
   // ------------------------------------------------------------------

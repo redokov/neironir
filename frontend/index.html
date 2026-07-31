@@ -55,7 +55,7 @@
       <!-- Review section -->
       <section id="review-section" class="card" hidden>
         <h2>Проверка анонимизации</h2>
-        <p class="hint">Выделите текст мышью, чтобы добавить пропущенную сущность. Нажмите на сущность, чтобы удалить ложное срабатывание.</p>
+        <p class="hint">Выделите текст мышью, чтобы добавить пропущенную сущность. Нажмите на сущность, чтобы удалить ложное срабатывание. Нажмите «Сохранить правки в файл», чтобы применить правки к итоговому документу.</p>
 
         <!-- Preview text with highlights -->
         <div id="preview" class="preview" tabindex="0"></div>
@@ -73,22 +73,12 @@
 
         <!-- Actions -->
         <div class="actions">
-          <button type="button" id="confirm-all" class="button primary">Всё верно</button>
-          <button type="button" id="apply-feedback" class="button primary">Сохранить правки в файл</button>
-          <button type="button" id="submit-feedback" class="button" hidden>Отправить правки</button>
-          <button type="button" id="skip-review" class="button">Пропустить</button>
-        </div>
-
-        <!-- Comment -->
-        <div id="comment-section" class="comment-section" hidden>
-          <label for="feedback-comment">Комментарий (необязательно):</label>
-          <textarea id="feedback-comment" rows="2" placeholder="Замечания по качеству анонимизации..."></textarea>
+          <button type="button" id="apply-feedback" class="button primary" disabled>Сохранить правки в файл</button>
         </div>
 
         <!-- Feedback confirmation -->
-        <p id="feedback-success" class="success" hidden>Спасибо! Ваши правки сохранены и будут использованы для улучшения модели.</p>
-        <p id="apply-success" class="success" hidden>Правки применены к итоговому файлу.</p>
-        <p id="apply-error" class="error" hidden></p>
+        <p id="apply-success" class="success" role="status" aria-live="polite" hidden>Правки применены к итоговому файлу.</p>
+        <p id="apply-error" class="error" role="alert" aria-live="assertive" hidden></p>
       </section>
     </main>
     <script src="/static/app.js" defer></script>
