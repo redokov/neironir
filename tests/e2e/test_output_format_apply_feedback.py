@@ -123,9 +123,7 @@ def test_upload_with_output_format_md_returns_md_file(server_url: str) -> None:
     """uploading a .docx with output_format=md produces a .md download."""
     docx_path = Path("test_upload_output.docx")
     try:
-        docx_bytes = _build_docx_bytes(
-            docx_path, ["Reach me at user@example.com."]
-        )
+        docx_bytes = _build_docx_bytes(docx_path, ["Reach me at user@example.com."])
     finally:
         if docx_path.exists():
             docx_path.unlink()
@@ -188,9 +186,7 @@ def test_apply_feedback_endpoint_updates_result_file(server_url: str) -> None:
     assert body["rejected"] == 1
 
     # Re-download to confirm the on-disk change.
-    dl = httpx.get(
-        f"{server_url}/api/v1/documents/{job_id}/download", timeout=5.0
-    )
+    dl = httpx.get(f"{server_url}/api/v1/documents/{job_id}/download", timeout=5.0)
     assert dl.status_code == 200
     assert "user@example.com" in dl.text
     assert "<PRIVATE_EMAIL" not in dl.text

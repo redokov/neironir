@@ -38,15 +38,15 @@ lower-priority span is dropped. The priority order is:
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 import re
 import threading
+from pathlib import Path
 from typing import ClassVar
 
 from neironir.domain.entity_type import EntityType
+from neironir.privacy.client import EntitySpan
 
 logger = logging.getLogger(__name__)
-from neironir.privacy.client import EntitySpan
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -90,20 +90,12 @@ class RuleBasedDetector:
         #   6. Person names / Organisation names / Addresses / Dates
 
         # -- 1. EMAIL --------------------------------------------------------
-        patterns.append(
-            (EntityType.PRIVATE_EMAIL, re.compile(_EMAIL_PATTERN), "email")
-        )
+        patterns.append((EntityType.PRIVATE_EMAIL, re.compile(_EMAIL_PATTERN), "email"))
 
         # -- 2. TAX IDENTIFIERS (BEFORE PHONE! numeric IDs match phone too) --
-        patterns.append(
-            (EntityType.ACCOUNT_NUMBER, re.compile(_INN_KPP_PATTERN), "inn_kpp")
-        )
-        patterns.append(
-            (EntityType.ACCOUNT_NUMBER, re.compile(_KPP_PATTERN), "kpp")
-        )
-        patterns.append(
-            (EntityType.ACCOUNT_NUMBER, re.compile(_OGRN_PATTERN), "ogrn")
-        )
+        patterns.append((EntityType.ACCOUNT_NUMBER, re.compile(_INN_KPP_PATTERN), "inn_kpp"))
+        patterns.append((EntityType.ACCOUNT_NUMBER, re.compile(_KPP_PATTERN), "kpp"))
+        patterns.append((EntityType.ACCOUNT_NUMBER, re.compile(_OGRN_PATTERN), "ogrn"))
 
         # -- 3. BANK ACCOUNTS WITH EXPLICIT PREFIX ---------------------------
         patterns.append(
@@ -112,14 +104,10 @@ class RuleBasedDetector:
         patterns.append(
             (EntityType.ACCOUNT_NUMBER, re.compile(_CORR_ACCOUNT_PATTERN), "corr_account")
         )
-        patterns.append(
-            (EntityType.ACCOUNT_NUMBER, re.compile(_BIK_PATTERN), "bik")
-        )
+        patterns.append((EntityType.ACCOUNT_NUMBER, re.compile(_BIK_PATTERN), "bik"))
 
         # -- 4. PHONE (generic; catches any remaining digit runs) -------------
-        patterns.append(
-            (EntityType.PRIVATE_PHONE, re.compile(_PHONE_PATTERN), "phone")
-        )
+        patterns.append((EntityType.PRIVATE_PHONE, re.compile(_PHONE_PATTERN), "phone"))
 
         # -- 5. CONTRACT / DOCUMENT NUMBERS ----------------------------------
         patterns.append(
@@ -185,7 +173,9 @@ class RuleBasedDetector:
                 pos = text.find(org, start)
                 if pos == -1:
                     break
-                spans.append(EntitySpan(start=pos, end=pos + len(org), entity_type=EntityType.PRIVATE_PERSON))
+                spans.append(
+                    EntitySpan(start=pos, end=pos + len(org), entity_type=EntityType.PRIVATE_PERSON)
+                )
                 start = pos + 1
         return spans
 
@@ -230,13 +220,17 @@ class RuleBasedDetector:
             try:
                 entity_type = EntityType(entity_type_str)
             except ValueError:
-                logger.warning("dynamic rule %s: unknown entity type %r", fpath.stem, entity_type_str)
+                logger.warning(
+                    "dynamic rule %s: unknown entity type %r", fpath.stem, entity_type_str
+                )
                 continue
 
             try:
                 pattern = re.compile(pattern_str)
             except re.error as exc:
-                logger.warning("dynamic rule %s: invalid regex %r — %s", fpath.stem, pattern_str, exc)
+                logger.warning(
+                    "dynamic rule %s: invalid regex %r — %s", fpath.stem, pattern_str, exc
+                )
                 continue
 
             with cls._dynamic_rules_lock:
@@ -307,9 +301,9 @@ _KPP_PATTERN = r"КПП\s*[:/]?\s*\d{9}"
 # INN can be 10 digits (legal entity) or 12 digits (individual)
 # KPP is 9 digits
 _INN_KPP_PATTERN = (
-    r"(?:" 
-    r"ИНН\s*[/:]?\s*\d{10}(?:\d{2})?"          # ИНН 10 или 12 цифр
-    r"(?:\s*[/\\]\s*КПП\s*[/:]\s*\d{9})?"       # опционально /КПП
+    r"(?:"
+    r"ИНН\s*[/:]?\s*\d{10}(?:\d{2})?"  # ИНН 10 или 12 цифр
+    r"(?:\s*[/\\]\s*КПП\s*[/:]\s*\d{9})?"  # опционально /КПП
     r")"
 )
 
@@ -324,34 +318,34 @@ _FALLBACK_RU_ID_PATTERN = r"(?<!\d)\d{10}(?:\d{2,5})?(?!\d)"
 
 # Person name: "Иванов И.И."  (surname + space + initial.initial)
 _SURNAME_INITIALS_PATTERN = (
-    r"[А-ЯЁ][а-яё]+\s+"           # Фамилия
-    r"[А-ЯЁ]\.\s*[А-ЯЁ]\."        # И.О.
+    r"[А-ЯЁ][а-яё]+\s+"  # Фамилия
+    r"[А-ЯЁ]\.\s*[А-ЯЁ]\."  # И.О.
 )
 
 # Person name: "И.И. Иванов"  (initial.initial + surname)
 _INITIALS_SURNAME_PATTERN = (
-    r"[А-ЯЁ]\.\s*[А-ЯЁ]\.\s+"    # И.О.
-    r"[А-ЯЁ][а-яё]+"              # Фамилия
+    r"[А-ЯЁ]\.\s*[А-ЯЁ]\.\s+"  # И.О.
+    r"[А-ЯЁ][а-яё]+"  # Фамилия
 )
 
 # Full name triple (possibly in non-nominative case):
 # "Ханина Андрея Анатольевича", "Соловьев Роман Евгеньевич"
 _FULL_NAME_PATTERN = (
-    r"[А-ЯЁ][а-яё]+\s+"           # Фамилия
-    r"[А-ЯЁ][а-яё]+\s+"           # Имя
-    r"[А-ЯЁ][а-яё]+"              # Отчество
+    r"[А-ЯЁ][а-яё]+\s+"  # Фамилия
+    r"[А-ЯЁ][а-яё]+\s+"  # Имя
+    r"[А-ЯЁ][а-яё]+"  # Отчество
 )
 
 # Organisation in quotes: ООО «Моторинвест», АО "Рога и Копыта"
 _ORG_WITH_QUOTES_PATTERN = (
-    r"(?:(?:ООО|АО|ЗАО|ОАО|ПАО|ИП)\s*)"    # legal form
-    r"[«\"(]([^»\")]+)[»\")]"                # quoted name
+    r"(?:(?:ООО|АО|ЗАО|ОАО|ПАО|ИП)\s*)"  # legal form
+    r"[«\"(]([^»\")]+)[»\")]"  # quoted name
 )
 
 # Organisation in brackets for latinised forms
 _ORG_WITH_BRACKETS_PATTERN = (
-    r"(?:(?:OOO|ZAO|OAO|PAO)\s*)"          # latinised legal form
-    r"«([^»]+)»"                            
+    r"(?:(?:OOO|ZAO|OAO|PAO)\s*)"  # latinised legal form
+    r"«([^»]+)»"
 )
 
 # Russian postal address pattern
@@ -362,23 +356,21 @@ _ORG_WITH_BRACKETS_PATTERN = (
 # cross newline boundaries (otherwise it would eat following paragraphs).
 # The hyphen is placed last in the character class to avoid range ambiguity.
 _ADDRESS_PATTERN = (
-    r"\d{6},\s*"                                     # Postal code + comma
+    r"\d{6},\s*"  # Postal code + comma
     r"(?:г\.|обл\.|край|респ\.|р-н|район|пос\.|с\.|д\.|дер\.)"  # Region type
-    r"[ ,./\d№«»\(\)А-Яа-яёЁ-]+"                    # City name + rest (no \n, hyphen last)
+    r"[ ,./\d№«»\(\)А-Яа-яёЁ-]+"  # City name + rest (no \n, hyphen last)
 )
 
 # Russian text date: "27 июля 2022 года", "«12» декабря 2022г."
 _RU_DATE_TEXT_PATTERN = (
-    r"\d{1,2}\s+"                          # Day
+    r"\d{1,2}\s+"  # Day
     r"(?:января|февраля|марта|апреля|мая|июня|"
     r"июля|августа|сентября|октября|ноября|декабря)"  # Month
-    r"\s+\d{4}\s*(?:г\.|года|год)?"        # Year
+    r"\s+\d{4}\s*(?:г\.|года|год)?"  # Year
 )
 
 # Contract/document number: №27072022, № 123/2022
-_CONTRACT_NUM_PATTERN = (
-    r"[№#]\s*\d{1,10}"                     # № + digits
-)
+_CONTRACT_NUM_PATTERN = r"[№#]\s*\d{1,10}"  # № + digits
 
 
 # ---------------------------------------------------------------------------

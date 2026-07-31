@@ -13,7 +13,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 from neironir.admin.training import append_job_feedback_to_dataset
 
 
@@ -38,9 +37,7 @@ def _write_feedback(
 
 
 class TestAppendJobFeedbackToDataset:
-    def test_writes_one_record_per_add_action(
-        self, tmp_path: Path
-    ) -> None:
+    def test_writes_one_record_per_add_action(self, tmp_path: Path) -> None:
         job_dir = tmp_path / "jobs" / "job-1"
         _write_feedback(
             job_dir,
@@ -68,9 +65,7 @@ class TestAppendJobFeedbackToDataset:
         # Original text is preserved verbatim.
         assert record["text"] == "Reach me at user@example.com and admin@example.org."
         # Span offsets are relative to the original text.
-        assert record["spans"] == [
-            {"start": 28, "end": 46, "label": "private_phone"}
-        ]
+        assert record["spans"] == [{"start": 28, "end": 46, "label": "private_phone"}]
 
     def test_skips_non_add_actions(self, tmp_path: Path) -> None:
         job_dir = tmp_path / "jobs" / "job-2"
@@ -105,9 +100,7 @@ class TestAppendJobFeedbackToDataset:
         assert added == 0
         assert not dataset.exists()
 
-    def test_mixed_actions_only_count_adds(
-        self, tmp_path: Path
-    ) -> None:
+    def test_mixed_actions_only_count_adds(self, tmp_path: Path) -> None:
         job_dir = tmp_path / "jobs" / "job-3"
         _write_feedback(
             job_dir,
@@ -136,8 +129,7 @@ class TestAppendJobFeedbackToDataset:
 
         assert added == 1
         records = [
-            json.loads(line)
-            for line in dataset.read_text(encoding="utf-8").strip().splitlines()
+            json.loads(line) for line in dataset.read_text(encoding="utf-8").strip().splitlines()
         ]
         assert len(records) == 1
         assert records[0]["spans"][0]["label"] == "private_phone"
@@ -145,7 +137,10 @@ class TestAppendJobFeedbackToDataset:
     def test_appends_to_existing_dataset(self, tmp_path: Path) -> None:
         """A second call should append, not overwrite."""
         dataset = tmp_path / "dataset.jsonl"
-        dataset.write_text('{"text": "earlier", "spans": [{"start": 0, "end": 1, "label": "x"}]}\n', encoding="utf-8")
+        dataset.write_text(
+            '{"text": "earlier", "spans": [{"start": 0, "end": 1, "label": "x"}]}\n',
+            encoding="utf-8",
+        )
 
         job_dir = tmp_path / "jobs" / "job-4"
         _write_feedback(
@@ -173,9 +168,7 @@ class TestAppendJobFeedbackToDataset:
         record = json.loads(lines[1])
         assert record["text"] == "new content"
 
-    def test_creates_parent_directory_if_missing(
-        self, tmp_path: Path
-    ) -> None:
+    def test_creates_parent_directory_if_missing(self, tmp_path: Path) -> None:
         job_dir = tmp_path / "jobs" / "job-5"
         _write_feedback(
             job_dir,
@@ -252,9 +245,7 @@ class TestAppendJobFeedbackToDataset:
         dataset = tmp_path / "dataset.jsonl"
         assert append_job_feedback_to_dataset(job_dir, dataset) == 0
 
-    def test_unknown_entity_type_is_skipped_silently(
-        self, tmp_path: Path
-    ) -> None:
+    def test_unknown_entity_type_is_skipped_silently(self, tmp_path: Path) -> None:
         job_dir = tmp_path / "jobs" / "job-8"
         _write_feedback(
             job_dir,

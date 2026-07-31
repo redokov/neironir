@@ -1,11 +1,9 @@
-import asyncio
 import json
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-
 from neironir.api.dependencies import get_privacy, get_settings, get_storage
 from neironir.auth.dependencies import require_admin_auth, verify_csrf
 from neironir.config import Settings
@@ -39,9 +37,7 @@ def _make_completed_md_job(
     (job_dir / "result.md").write_text(cleaned, encoding="utf-8")
 
     # Counters
-    (job_dir / "counters.json").write_text(
-        json.dumps({"private_email": 1}), encoding="utf-8"
-    )
+    (job_dir / "counters.json").write_text(json.dumps({"private_email": 1}), encoding="utf-8")
 
     now = "2025-01-01T00:00:00"
     job = Job(
@@ -192,6 +188,7 @@ async def test_run_job_with_corrupt_docx(tmp_path: Path) -> None:
     storage.save_source(jid, "corrupt.docx", b"not a valid docx zip file")
 
     from neironir.config import Settings as Cfg
+
     settings = Cfg(
         storage_dir=str(storage_dir),
         session_secret="test-secret",
@@ -199,6 +196,7 @@ async def test_run_job_with_corrupt_docx(tmp_path: Path) -> None:
 
     # Run the pipeline directly.
     from neironir.workers.pipeline import run_job
+
     await run_job(
         job_id=jid,
         settings=settings,

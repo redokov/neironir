@@ -10,8 +10,6 @@ import json
 from pathlib import Path
 from uuid import uuid4
 
-import pytest
-
 from neironir.privacy.feedback_analyzer import (
     FeedbackAnalyzer,
     _extract_digit_pattern,
@@ -19,7 +17,6 @@ from neironir.privacy.feedback_analyzer import (
     _extract_name_pattern,
     _extract_org_pattern,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -49,10 +46,15 @@ def _write_job_feedback(
     )
 
     from datetime import datetime
+
     from neironir.domain.job import Job, JobStatus
+
     job = Job(
-        id=jid, status=JobStatus.COMPLETED, source_filename=f"{jid}.md",
-        source_ext="md", created_at=datetime.now(),
+        id=jid,
+        status=JobStatus.COMPLETED,
+        source_filename=f"{jid}.md",
+        source_ext="md",
+        created_at=datetime.now(),
     )
     (job_dir / "job.json").write_text(
         json.dumps(job.to_dict(), ensure_ascii=False), encoding="utf-8"
@@ -86,7 +88,15 @@ class TestComputeStats:
     def test_one_job_with_add(self, tmp_path: Path) -> None:
         _write_job_feedback(
             tmp_path,
-            actions=[{"action": "add", "start": 0, "end": 5, "entity_type": "private_email", "text": "user@"}],
+            actions=[
+                {
+                    "action": "add",
+                    "start": 0,
+                    "end": 5,
+                    "entity_type": "private_email",
+                    "text": "user@",
+                }
+            ],
         )
         analyzer = FeedbackAnalyzer(storage_dir=tmp_path)
         stats = analyzer.compute_stats()
@@ -99,8 +109,20 @@ class TestComputeStats:
             _write_job_feedback(
                 tmp_path,
                 actions=[
-                    {"action": "add", "start": i, "end": i + 3, "entity_type": "private_phone", "text": "123"},
-                    {"action": "confirm", "start": i + 5, "end": i + 8, "entity_type": "private_email", "text": "a@b"},
+                    {
+                        "action": "add",
+                        "start": i,
+                        "end": i + 3,
+                        "entity_type": "private_phone",
+                        "text": "123",
+                    },
+                    {
+                        "action": "confirm",
+                        "start": i + 5,
+                        "end": i + 8,
+                        "entity_type": "private_email",
+                        "text": "a@b",
+                    },
                 ],
             )
         analyzer = FeedbackAnalyzer(storage_dir=tmp_path)
@@ -126,7 +148,15 @@ class TestProposeRules:
         """One ADD action for a phone number should not meet min_occurrences=3."""
         _write_job_feedback(
             tmp_path,
-            actions=[{"action": "add", "start": 12, "end": 28, "entity_type": "private_email", "text": "user@example.com"}],
+            actions=[
+                {
+                    "action": "add",
+                    "start": 12,
+                    "end": 28,
+                    "entity_type": "private_email",
+                    "text": "user@example.com",
+                }
+            ],
         )
         analyzer = FeedbackAnalyzer(storage_dir=tmp_path)
         proposals = analyzer.propose_rules(min_occurrences=3)
@@ -138,7 +168,15 @@ class TestProposeRules:
         for _ in range(3):
             _write_job_feedback(
                 tmp_path,
-                actions=[{"action": "add", "start": 10, "end": 26, "entity_type": "private_email", "text": "user@example.com"}],
+                actions=[
+                    {
+                        "action": "add",
+                        "start": 10,
+                        "end": 26,
+                        "entity_type": "private_email",
+                        "text": "user@example.com",
+                    }
+                ],
                 text=text,
             )
         analyzer = FeedbackAnalyzer(storage_dir=tmp_path)
@@ -150,7 +188,15 @@ class TestProposeRules:
         for _ in range(3):
             _write_job_feedback(
                 tmp_path,
-                actions=[{"action": "add", "start": 5, "end": 21, "entity_type": "private_phone", "text": "+7 495 123-45-67"}],
+                actions=[
+                    {
+                        "action": "add",
+                        "start": 5,
+                        "end": 21,
+                        "entity_type": "private_phone",
+                        "text": "+7 495 123-45-67",
+                    }
+                ],
                 text=text,
             )
         analyzer = FeedbackAnalyzer(storage_dir=tmp_path)

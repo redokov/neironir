@@ -48,15 +48,11 @@ class TestF3ContractNoise:
 
     def test_no_pandoc_html_block(self) -> None:
         md = convert_to_markdown(REAL_CONTRACT)
-        assert "{=html" not in md, (
-            "raw 'pandoc html block' separator leaked into the output"
-        )
+        assert "{=html" not in md, "raw 'pandoc html block' separator leaked into the output"
 
     def test_no_pandoc_html_comment(self) -> None:
         md = convert_to_markdown(REAL_CONTRACT)
-        assert "<!--" not in md, (
-            "raw HTML comment leaked into the output"
-        )
+        assert "<!--" not in md, "raw HTML comment leaked into the output"
 
     def test_no_autolink_email_wrapper(self) -> None:
         md = convert_to_markdown(REAL_CONTRACT)
@@ -105,9 +101,7 @@ class TestF3ContractNoise:
             # Allow a single ``>`` char inside a quoted string in the
             # actual text content, but not as a markdown blockquote
             # prefix at line start.
-            assert not line.startswith("> "), (
-                f"unexpected blockquote: {line!r}"
-            )
+            assert not line.startswith("> "), f"unexpected blockquote: {line!r}"
 
     def test_output_is_much_shorter_than_pandoc(self) -> None:
         """The old pandoc output for this contract was 10771 bytes;
@@ -131,8 +125,7 @@ class TestF3ContractNoise:
         # Allow a small slack but expect the new output to be at
         # least 10% smaller — empirically the diff is ~30%.
         assert new_size < old_size * 0.9, (
-            f"new converter output ({new_size}) is not noticeably "
-            f"shorter than pandoc ({old_size})"
+            f"new converter output ({new_size}) is not noticeably shorter than pandoc ({old_size})"
         )
 
 

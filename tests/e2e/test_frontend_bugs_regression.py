@@ -120,9 +120,7 @@ class TestModeEndpoint:
         assert r.status_code == 200
         assert "detail" not in r.json()
 
-    def test_mode_endpoint_documents_endpoint_still_works(
-        self, mode_client: TestClient
-    ) -> None:
+    def test_mode_endpoint_documents_endpoint_still_works(self, mode_client: TestClient) -> None:
         """Adding ``meta_router`` didn't break the existing jobs router."""
         # Hit a job-id-shaped URL to make sure 404 behaviour is
         # preserved for unknown IDs (i.e. not for 'mode').
@@ -146,9 +144,7 @@ class TestJavaScriptPatches:
     def app_js(self) -> str:
         return (FRONTEND / "app.js").read_text(encoding="utf-8")
 
-    def test_show_upload_options_does_not_uncheck_existing_choice(
-        self, app_js: str
-    ) -> None:
+    def test_show_upload_options_does_not_uncheck_existing_choice(self, app_js: str) -> None:
         """Bug 1: ``showUploadOptions`` must NOT reset the checkbox."""
         # The old implementation set ``checked = false`` unconditionally
         # for docx files.  After the fix it must only enable/disable.
@@ -199,8 +195,7 @@ class TestJavaScriptPatches:
         # Strip line-comments so a docstring referencing the old
         # pattern doesn't trip the check.
         code_only = "\n".join(
-            line for line in body.splitlines()
-            if not line.strip().startswith("//")
+            line for line in body.splitlines() if not line.strip().startswith("//")
         )
         assert "window.scrollY" not in code_only, (
             "selection toolbar still uses window.scrollY — the toolbar "
@@ -215,8 +210,7 @@ class TestJavaScriptPatches:
     def test_mode_info_banner_is_loaded(self, app_js: str) -> None:
         """Bug 2: there must be a call to ``/api/v1/mode`` from the frontend."""
         assert "/api/v1/mode" in app_js, (
-            "frontend no longer queries /api/v1/mode — "
-            "users won't see the mock-mode warning banner"
+            "frontend no longer queries /api/v1/mode — users won't see the mock-mode warning banner"
         )
         assert "loadModeInfo" in app_js
 
@@ -241,12 +235,10 @@ class TestJavaScriptPatches:
         )
         assert match is not None
         body = match.group(0)
-        assert '$.outputFormatMd.checked = true' in body, (
+        assert "$.outputFormatMd.checked = true" in body, (
             "showUploadOptions does not default to checked"
         )
-        assert 'dataset.userSet' in body, (
-            "missing dataset.userSet guard"
-        )
+        assert "dataset.userSet" in body, "missing dataset.userSet guard"
 
     def test_apply_feedback_keeps_pending_actions(self, app_js: str) -> None:
         """Bug fix: after apply-feedback, pendingActions must not
@@ -376,9 +368,13 @@ def _make_docx_path(target_dir: Path, name: str = "contract.docx") -> Path:
     return src
 
 
-# Skip the entire module if Chromium is not installed — keeps CI on
-# machines without playwright happy.
+# Skip the entire module if playwright (python package + Chromium) is
+# not installed — keeps CI on machines without playwright happy.
 def _chromium_available() -> bool:
+    import importlib.util
+
+    if importlib.util.find_spec("playwright") is None:
+        return False
     cache = Path.home() / "AppData" / "Local" / "ms-playwright"
     return cache.is_dir() and any(cache.glob("chromium-*"))
 
@@ -398,9 +394,7 @@ def _wait_for_upload(page) -> str:
     """Wait until the job section shows a downloadable result."""
     # The mock client is synchronous so a few seconds is plenty.
     page.wait_for_selector("#download:not([hidden])", timeout=10_000)
-    return page.eval_on_selector(
-        "#download", "el => el.getAttribute('href')"
-    )
+    return page.eval_on_selector("#download", "el => el.getAttribute('href')")
 
 
 # ----- Bug 1a: checkbox defaults to checked for .docx files ----------
@@ -436,9 +430,7 @@ class TestOutputFormatDefaultChecked:
             finally:
                 browser.close()
 
-    def test_checkbox_stays_checked_after_upload(
-        self, live_server: str, tmp_path: Path
-    ) -> None:
+    def test_checkbox_stays_checked_after_upload(self, live_server: str, tmp_path: Path) -> None:
         """When the user uploads a second file, the checkbox stays
         checked (the user's preference is preserved)."""
         from playwright.sync_api import sync_playwright
@@ -457,9 +449,7 @@ class TestOutputFormatDefaultChecked:
                 )
                 page.set_input_files("#file-input", str(first_path))
                 page.wait_for_selector("#download:not([hidden])", timeout=10_000)
-                assert page.is_checked("#output-format-md"), (
-                    "default check failed on first upload"
-                )
+                assert page.is_checked("#output-format-md"), "default check failed on first upload"
 
                 # Upload a second docx — checkbox must still be checked.
                 page.click("#reset")
@@ -533,9 +523,7 @@ class TestOutputFormatCheckboxSurvivesDrop:
 
 
 class TestMockModeBanner:
-    def test_banner_explains_mock_limitations(
-        self, live_server: str
-    ) -> None:
+    def test_banner_explains_mock_limitations(self, live_server: str) -> None:
         from playwright.sync_api import sync_playwright
 
         with sync_playwright() as pw:
@@ -556,9 +544,7 @@ class TestMockModeBanner:
             finally:
                 browser.close()
 
-    def test_real_pipeline_redacts_email(
-        self, live_server: str, tmp_path: Path
-    ) -> None:
+    def test_real_pipeline_redacts_email(self, live_server: str, tmp_path: Path) -> None:
         """End-to-end: a docx uploaded defaults to md output
         (checkbox is now checked by default). The mock mode
         redacts email — the downloaded markdown must contain
@@ -575,14 +561,10 @@ class TestMockModeBanner:
                     first_path,
                     ["Email: user@example.com"],
                 )
-                page.set_input_files(
-                    "#file-input", str(first_path)
-                )
+                page.set_input_files("#file-input", str(first_path))
                 page.wait_for_selector("#download:not([hidden])", timeout=10_000)
 
-                href = page.eval_on_selector(
-                    "#download", "el => el.getAttribute('href')"
-                )
+                href = page.eval_on_selector("#download", "el => el.getAttribute('href')")
                 import httpx
 
                 r = httpx.get(live_server + href, timeout=5.0)
@@ -590,8 +572,7 @@ class TestMockModeBanner:
                 body = r.text
                 # The markdown output must have the placeholder.
                 assert "<PRIVATE_EMAIL1>" in body, (
-                    "email was not redacted — pipeline may have "
-                    "returned the original text"
+                    "email was not redacted — pipeline may have returned the original text"
                 )
                 # Original email must be gone.
                 assert "user@example.com" not in body
@@ -620,9 +601,7 @@ class TestSelectionToolbarPosition:
                 page.goto(live_server)
 
                 # Upload + go to review.
-                page.set_input_files(
-                    "#file-input", str(_make_docx_path(tmp_path))
-                )
+                page.set_input_files("#file-input", str(_make_docx_path(tmp_path)))
                 page.wait_for_selector("#download:not([hidden])", timeout=10_000)
                 page.click("#review-btn")
                 page.wait_for_selector("#preview .entity-span", timeout=10_000)

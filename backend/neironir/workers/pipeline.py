@@ -25,7 +25,12 @@ from neironir.converters.docx import DocxConverter
 from neironir.converters.markdown import MarkdownConverter
 from neironir.domain.job import JobStatus
 from neironir.domain.placeholder import PlaceholderCounter
-from neironir.privacy.client import EntitySpan, MockPrivacyFilterClient, PrivacyFilterClient, PrivacyFilterError
+from neironir.privacy.client import (
+    EntitySpan,
+    MockPrivacyFilterClient,
+    PrivacyFilterClient,
+    PrivacyFilterError,
+)
 from neironir.storage.local import LocalStorage, atomic_write
 
 logger = logging.getLogger(__name__)
@@ -93,9 +98,10 @@ async def run_job(
             spans = await privacy.annotate(text)
         except (NotImplementedError, FileNotFoundError, PrivacyFilterError) as exc:
             logger.warning(
-                "subprocess privacy filter failed for job %s (%s: %s) — "
-                "falling back to mock mode",
-                job_id, type(exc).__name__, exc,
+                "subprocess privacy filter failed for job %s (%s: %s) — falling back to mock mode",
+                job_id,
+                type(exc).__name__,
+                exc,
             )
             job.processing_note = (
                 "Нейронная модель не ответила за отведённое время. "

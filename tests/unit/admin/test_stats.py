@@ -190,12 +190,27 @@ class TestComputeJobsWithFeedback:
             finished_at=now,
             with_feedback=True,
             feedback_actions=[
-                {"action": "confirm", "entity_type": "private_email",
-                 "start": 0, "end": 5, "text": "foo@x"},
-                {"action": "add", "entity_type": "private_phone",
-                 "start": 6, "end": 18, "text": "+7 (495) 1"},
-                {"action": "reject", "entity_type": "private_date",
-                 "start": 19, "end": 29, "text": "01.01.2024"},
+                {
+                    "action": "confirm",
+                    "entity_type": "private_email",
+                    "start": 0,
+                    "end": 5,
+                    "text": "foo@x",
+                },
+                {
+                    "action": "add",
+                    "entity_type": "private_phone",
+                    "start": 6,
+                    "end": 18,
+                    "text": "+7 (495) 1",
+                },
+                {
+                    "action": "reject",
+                    "entity_type": "private_date",
+                    "start": 19,
+                    "end": 29,
+                    "text": "01.01.2024",
+                },
             ],
             with_annotations=True,
             annotations=[{"start": 0, "end": 5, "entity_type": "private_email", "text": "foo@x"}],
@@ -244,9 +259,7 @@ class TestComputeJobsWithFeedback:
             created_at=now,
             finished_at=now,
         )
-        (job_dir / "job.json").write_text(
-            json.dumps(job.to_dict()), encoding="utf-8"
-        )
+        (job_dir / "job.json").write_text(json.dumps(job.to_dict()), encoding="utf-8")
         (job_dir / "feedback.json").write_text(
             json.dumps({"actions": [], "comment": "Ложное срабатывание на дате"}),
             encoding="utf-8",

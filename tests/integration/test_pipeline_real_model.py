@@ -119,14 +119,10 @@ import tempfile  # noqa: E402
 class TestRealModelDetection:
     """Verify that the real model finds the entity types the mock can't."""
 
-    def test_detects_person_name_in_russian_text(
-        self, real_client_and_storage: tuple
-    ) -> None:
+    def test_detects_person_name_in_russian_text(self, real_client_and_storage: tuple) -> None:
         """``Жалнин Максим Михайлович`` must produce a name annotation."""
         client, _ = real_client_and_storage
-        text = (
-            "Генеральный директор Жалнин Максим Михайлович подписал документ."
-        )
+        text = "Генеральный директор Жалнин Максим Михайлович подписал документ."
         r = client.post(
             "/api/v1/documents/",
             files={"file": ("contract.md", text.encode("utf-8"), "text/markdown")},
@@ -144,9 +140,7 @@ class TestRealModelDetection:
             "subprocess call failed silently"
         )
 
-    def test_detects_address_in_russian_text(
-        self, real_client_and_storage: tuple
-    ) -> None:
+    def test_detects_address_in_russian_text(self, real_client_and_storage: tuple) -> None:
         client, _ = real_client_and_storage
         text = "Адрес: г. Москва, ул. Тверская, д. 1."
         r = client.post(
@@ -235,9 +229,7 @@ class TestRealModelApplyFeedback:
     we rely on for the placeholder map.
     """
 
-    def test_reject_real_model_span(
-        self, real_client_and_storage: tuple
-    ) -> None:
+    def test_reject_real_model_span(self, real_client_and_storage: tuple) -> None:
         client, _ = real_client_and_storage
         text = "Директор Жалнин Максим Михайлович подписал контракт."
         r = client.post(
@@ -249,9 +241,7 @@ class TestRealModelApplyFeedback:
 
         # Find the index of the first person annotation.
         person_idx = next(
-            i
-            for i, span in enumerate(ann["spans"])
-            if span["entity_type"] == "private_person"
+            i for i, span in enumerate(ann["spans"]) if span["entity_type"] == "private_person"
         )
 
         # Reject it and verify the placeholder disappears from result.md.
@@ -294,9 +284,7 @@ class TestRealModelModeReporting:
     """The ``/api/v1/mode`` endpoint must show all 8 entity types
     when the real model is in use."""
 
-    def test_mode_lists_all_entity_types(
-        self, real_client_and_storage: tuple
-    ) -> None:
+    def test_mode_lists_all_entity_types(self, real_client_and_storage: tuple) -> None:
         client, _ = real_client_and_storage
         body = client.get("/api/v1/mode").json()
         assert body["privacy_filter_mode"] in {"subprocess", "combined"}

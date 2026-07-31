@@ -10,7 +10,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 from neironir.domain.entity_type import EntityType
 from neironir.privacy.rules import RuleBasedDetector
 
@@ -52,7 +51,9 @@ class TestBuiltInRules:
 
 
 class TestDynamicRules:
-    def test_load_dynamic_rules_from_directory(self, detector: RuleBasedDetector, tmp_path: Path) -> None:
+    def test_load_dynamic_rules_from_directory(
+        self, detector: RuleBasedDetector, tmp_path: Path
+    ) -> None:
         """Dynamic rules stored as ``rule_*.json`` files should be loaded."""
         rules_dir = tmp_path / "rules"
         rules_dir.mkdir()
@@ -63,9 +64,7 @@ class TestDynamicRules:
             "pattern": r"\b\d{3}-\d{2}-\d{2}\b",
             "status": "approved",
         }
-        (rules_dir / "rule_test-001.json").write_text(
-            json.dumps(rule_data), encoding="utf-8"
-        )
+        (rules_dir / "rule_test-001.json").write_text(json.dumps(rule_data), encoding="utf-8")
 
         # Since detector has no load_dynamic_rules reference to rules_dir,
         # we call the classmethod with the storage dir that contains rules/.
@@ -79,12 +78,14 @@ class TestDynamicRules:
 
         for status in ("proposed", "rejected", "draft"):
             (rules_dir / f"rule_{status}.json").write_text(
-                json.dumps({
-                    "rule_id": status,
-                    "entity_type": "private_phone",
-                    "pattern": r"\d{3}",
-                    "status": status,
-                }),
+                json.dumps(
+                    {
+                        "rule_id": status,
+                        "entity_type": "private_phone",
+                        "pattern": r"\d{3}",
+                        "status": status,
+                    }
+                ),
                 encoding="utf-8",
             )
 
@@ -97,12 +98,14 @@ class TestDynamicRules:
         rules_dir.mkdir()
 
         (rules_dir / "rule_bad.json").write_text(
-            json.dumps({
-                "rule_id": "bad",
-                "entity_type": "private_email",
-                "pattern": r"[invalid",  # unclosed bracket
-                "status": "approved",
-            }),
+            json.dumps(
+                {
+                    "rule_id": "bad",
+                    "entity_type": "private_email",
+                    "pattern": r"[invalid",  # unclosed bracket
+                    "status": "approved",
+                }
+            ),
             encoding="utf-8",
         )
 
@@ -116,12 +119,14 @@ class TestDynamicRules:
         rules_dir.mkdir()
 
         (rules_dir / "rule_unknown_type.json").write_text(
-            json.dumps({
-                "rule_id": "unknown",
-                "entity_type": "bogus_type",
-                "pattern": r"\d+",
-                "status": "approved",
-            }),
+            json.dumps(
+                {
+                    "rule_id": "unknown",
+                    "entity_type": "bogus_type",
+                    "pattern": r"\d+",
+                    "status": "approved",
+                }
+            ),
             encoding="utf-8",
         )
 
@@ -134,12 +139,14 @@ class TestDynamicRules:
         rules_dir.mkdir()
 
         (rules_dir / "rule_inn.json").write_text(
-            json.dumps({
-                "rule_id": "inn-10",
-                "entity_type": "account_number",
-                "pattern": r"\b\d{10}\b",
-                "status": "approved",
-            }),
+            json.dumps(
+                {
+                    "rule_id": "inn-10",
+                    "entity_type": "account_number",
+                    "pattern": r"\b\d{10}\b",
+                    "status": "approved",
+                }
+            ),
             encoding="utf-8",
         )
 
@@ -186,7 +193,7 @@ class TestEdgeCases:
         spans_sorted = sorted(spans, key=lambda s: s.start)
         for i in range(len(spans_sorted) - 1):
             assert spans_sorted[i].end <= spans_sorted[i + 1].start, (
-                f"overlapping spans: {spans_sorted[i]} and {spans_sorted[i+1]}"
+                f"overlapping spans: {spans_sorted[i]} and {spans_sorted[i + 1]}"
             )
 
     def test_non_ascii_text(self, detector: RuleBasedDetector) -> None:

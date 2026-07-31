@@ -26,7 +26,6 @@ from pathlib import Path
 from typing import Literal
 
 from neironir.converters.base import DocumentConverter, Replacement
-from neironir.converters.docx import DocxConverter
 from neironir.converters.markdown import MarkdownConverter
 from neironir.domain.entity_type import TEMPLATE_FORMAT, EntityType
 from neironir.storage.local import atomic_write
@@ -151,7 +150,9 @@ def _build_alignment(
         else:
             logger.warning(
                 "ran out of placeholders while aligning annotation %d..%d (%s)",
-                orig_start, orig_end, entity_type.value,
+                orig_start,
+                orig_end,
+                entity_type.value,
             )
             break
     return alignments
@@ -215,8 +216,7 @@ class FeedbackApplier:
         # ``result.pdf`` and emit a confusing ``FileNotFoundError``.
         if output_ext not in ("md", "docx"):
             raise ValueError(
-                f"unsupported output_ext {output_ext!r}; "
-                f"only 'md' and 'docx' are supported"
+                f"unsupported output_ext {output_ext!r}; only 'md' and 'docx' are supported"
             )
 
         original_text_path = job_dir / "extracted_text.txt"
@@ -241,9 +241,7 @@ class FeedbackApplier:
         converter = _converter_for(output_ext)
         cleaned_text = converter.extract_text(result_path)
         alignments = _build_alignment(annotations, cleaned_text)
-        ann_to_alignment = {
-            (a.orig_start, a.orig_end): a for a in alignments
-        }
+        ann_to_alignment = {(a.orig_start, a.orig_end): a for a in alignments}
 
         counters = _initial_counters(cleaned_text)
 
@@ -304,9 +302,7 @@ class FeedbackApplier:
                 key = (int(str(ann["start"])), int(str(ann["end"])))
                 alignment = ann_to_alignment.get(key)
                 if alignment is None:
-                    logger.warning(
-                        "could not reject span idx=%s — no alignment", original_index
-                    )
+                    logger.warning("could not reject span idx=%s — no alignment", original_index)
                     continue
                 reject_replacements.append(
                     Replacement(
@@ -394,7 +390,7 @@ def _initial_placeholder(
     key = (int(str(ann["start"])), int(str(ann["end"])))
     for al in alignments:
         if (al.orig_start, al.orig_end) == key:
-            return cleaned_text[al.cleaned_start:al.cleaned_end]
+            return cleaned_text[al.cleaned_start : al.cleaned_end]
     return ""
 
 

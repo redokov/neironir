@@ -78,7 +78,9 @@ def sign_csrf_value(session_id: str, token: str, *, secret: str) -> str:
 
 
 def verify_csrf_token(
-    *, header_token: str | None, cookie_token: str | None,
+    *,
+    header_token: str | None,
+    cookie_token: str | None,
     header_csrf_sid: str | None = None,
     secret: str = "",
 ) -> bool:
@@ -122,10 +124,7 @@ def verify_csrf_token(
 
     # Session binding: if a csrf_sid was provided from the session
     # cookie, it must match the sid embedded in the CSRF token.
-    if header_csrf_sid is not None and sid_from_header != header_csrf_sid:
-        return False
-
-    return True
+    return header_csrf_sid is None or sid_from_header == header_csrf_sid
 
 
 def _unsign(signed_value: str, secret: str) -> tuple[str, str] | None:

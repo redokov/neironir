@@ -70,12 +70,13 @@ def get_session_payload(
         if settings is None:
             return None
 
-    raw = request.cookies.get(settings.session_cookie_name)  # type: ignore[union-attr]
+    raw = request.cookies.get(settings.session_cookie_name)
     if not raw:
         return None
     try:
-        return read_session_cookie(raw, secret=settings.session_secret,  # type: ignore[union-attr]
-                                   max_age=settings.session_max_age)  # type: ignore[union-attr]
+        return read_session_cookie(
+            raw, secret=settings.session_secret, max_age=settings.session_max_age
+        )
     except (SessionExpiredError, SessionInvalidError):
         return None
 

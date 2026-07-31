@@ -18,8 +18,12 @@ from enum import Enum
 from uuid import UUID
 
 
-class FeedbackAction(str, Enum):
-    """What the user did with a detected/potential entity."""
+class FeedbackAction(str, Enum):  # noqa: UP042
+    """What the user did with a detected/potential entity.
+
+    Mirrors the ``(str, Enum)`` form used by :class:`EntityType` so the
+    JSON values (``confirm``/``reject``/``add``) round-trip as strings.
+    """
 
     # The user explicitly confirmed that the model's span is correct.
     CONFIRM = "confirm"

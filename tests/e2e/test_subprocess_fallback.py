@@ -49,8 +49,16 @@ def live_server() -> Generator[str, None, None]:
     env["NEIRONIR_STORAGE_DIR"] = str(REPO_ROOT / "storage_e2e_fallback")
 
     proc = subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "neironir.main:app",
-         "--host", "127.0.0.1", "--port", str(port)],
+        [
+            sys.executable,
+            "-m",
+            "uvicorn",
+            "neironir.main:app",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+        ],
         cwd=REPO_ROOT,
         env=env,
         stdout=subprocess.DEVNULL,
@@ -75,6 +83,7 @@ def live_server() -> Generator[str, None, None]:
     proc.kill()
     proc.wait()
     import shutil
+
     shutil.rmtree(REPO_ROOT / "storage_e2e_fallback", ignore_errors=True)
 
 
@@ -82,12 +91,20 @@ class TestRuntimeSettingsEndpoint:
     """Admin runtime settings API integration tests."""
 
     def test_get_settings_returns_default(self, live_server: str) -> None:
-        r = httpx.get(f"{live_server}/api/v1/admin/settings", timeout=5)
-        assert r.status_code == 200
-        data = r.json()
-        assert "privacy_filter_timeout" in data
-        # The env override sets it to 3.
-        assert data["privacy_filter_timeout"] == 3
+        # Admin endpoints require a session — log in first.
+        with httpx.Client(base_url=live_server, timeout=5) as client:
+            login = client.post(
+                "/login",
+                data={"username": "admin", "password": "test-pass"},
+                follow_redirects=False,
+            )
+            assert login.status_code == 303
+            r = client.get("/api/v1/admin/settings")
+            assert r.status_code == 200
+            data = r.json()
+            assert "privacy_filter_timeout" in data
+            # The env override sets it to 3.
+            assert data["privacy_filter_timeout"] == 3
 
     def test_auth_required(self, live_server: str) -> None:
         """Without admin session, GET /api/v1/admin/settings should 401."""
@@ -111,9 +128,7 @@ class TestSubprocessFallback:
 
         # Poll for completion (should be fast since mock is fast).
         for _ in range(60):
-            r = httpx.get(
-                f"{live_server}/api/v1/documents/{job_id}", timeout=5
-            )
+            r = httpx.get(f"{live_server}/api/v1/documents/{job_id}", timeout=5)
             job = r.json()
             if job["status"] in ("completed", "failed"):
                 break
@@ -133,9 +148,7 @@ class TestSubprocessFallback:
             f"processing_note should mention mock fallback, got: {job['processing_note']}"
         )
         # The result should still contain the mock-discovered placeholder.
-        r = httpx.get(
-            f"{live_server}/api/v1/documents/{job_id}/download", timeout=5
-        )
+        r = httpx.get(f"{live_server}/api/v1/documents/{job_id}/download", timeout=5)
         assert r.status_code == 200
         assert "<PRIVATE_EMAIL1>" in r.text, (
             "mock-detected email placeholder should be in the result"

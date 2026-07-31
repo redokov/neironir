@@ -176,9 +176,7 @@ def compute_jobs_with_feedback(
             continue
 
         try:
-            job = Job.from_dict(
-                json.loads((job_dir / "job.json").read_text(encoding="utf-8"))
-            )
+            job = Job.from_dict(json.loads((job_dir / "job.json").read_text(encoding="utf-8")))
             feedback = json.loads(feedback_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError, ValueError) as exc:
             logger.warning("skipping unreadable job %s: %s", job_dir.name, exc)
@@ -204,9 +202,7 @@ def compute_jobs_with_feedback(
                 corrections_by_type[etype] = corrections_by_type.get(etype, 0) + 1
             elif kind == "reject":
                 rejected += 1
-                false_positive_by_type[etype] = (
-                    false_positive_by_type.get(etype, 0) + 1
-                )
+                false_positive_by_type[etype] = false_positive_by_type.get(etype, 0) + 1
             elif kind == "add":
                 added += 1
                 missed_by_type[etype] = missed_by_type.get(etype, 0) + 1

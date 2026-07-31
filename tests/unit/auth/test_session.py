@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import time
-
 import pytest
 from neironir.auth.session import (
     SESSION_PAYLOAD_KEY,

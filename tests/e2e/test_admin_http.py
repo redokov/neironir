@@ -124,9 +124,7 @@ def admin_cookies(server_url: str) -> dict[str, str]:
             follow_redirects=False,
             timeout=5.0,
         )
-        assert r.status_code in (302, 303), (
-            f"login failed: {r.status_code} {r.text[:200]}"
-        )
+        assert r.status_code in (302, 303), f"login failed: {r.status_code} {r.text[:200]}"
         # Collect cookies from the response.
         cookies = {}
         for cookie in r.cookies.jar:

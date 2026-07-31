@@ -77,7 +77,7 @@ class FeedbackStats:
 
 # Heuristic patterns for common Russian PII — the analyzer uses these to
 # recognise structure in user-provided text snippets.
-_PATTERN_TEMPLATES: ClassVar[dict[str, list[str]]] = {
+_PATTERN_TEMPLATES: dict[str, list[str]] = {
     "account_number": [
         # ИНН: 10 or 12 digits
         r"\d{10}(?:\d{2})?",
@@ -282,7 +282,7 @@ class FeedbackAnalyzer:
             A list of proposed rules, sorted by evidence count descending.
         """
         # Collect all ADD actions grouped by (entity_type, pattern_key).
-        groups: dict[tuple[str, str], list[dict]] = defaultdict(list)
+        groups: dict[tuple[str, str], list[dict[str, object]]] = defaultdict(list)
 
         for fb_path in self._iter_feedback_files():
             try:
@@ -308,15 +308,14 @@ class FeedbackAnalyzer:
             if len(actions) < min_occurrences:
                 continue
 
-            samples = [a.get("text", "") for a in actions[:5]]
+            samples = [str(a.get("text", "")) for a in actions[:5]]
 
             # Determine confidence: exact-digit patterns (ИНН, ОГРН…)
             # have higher confidence than open-ended text patterns.
             confidence = 0.7
             has_digit_pattern = bool(re.search(r"\\d\{\d+\}", pattern_key))
             has_prefix = any(
-                prefix in pattern_key
-                for prefix in ["ИНН", "КПП", "ОГРН", "БИК", "р/с", "к/с"]
+                prefix in pattern_key for prefix in ["ИНН", "КПП", "ОГРН", "БИК", "р/с", "к/с"]
             )
             if has_prefix and has_digit_pattern:
                 confidence = 0.95
@@ -371,16 +370,13 @@ class FeedbackAnalyzer:
     @staticmethod
     def _make_description(
         entity_type: str,
-        actions: list[dict],
+        actions: list[dict[str, object]],
         pattern: str,
     ) -> str:
         """Generate a human-readable description for a proposal."""
         samples = [a.get("text", "") for a in actions[:3]]
         sample_str = ", ".join(f'"{s}"' for s in samples)
-        return (
-            f"Detected {len(actions)}x ADD for type '{entity_type}': "
-            f"e.g. {sample_str}"
-        )
+        return f"Detected {len(actions)}x ADD for type '{entity_type}': e.g. {sample_str}"
 
 
 __all__ = [

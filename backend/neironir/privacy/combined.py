@@ -95,10 +95,13 @@ class CombinedPrivacyClient:
         overridden_indices: set[int] = set()
         for rule_span in rule_spans:
             for idx, model_span in enumerate(model_spans):
-                if _overlaps(rule_span, model_span) and rule_span.entity_type != model_span.entity_type:
+                if (
+                    _overlaps(rule_span, model_span)
+                    and rule_span.entity_type != model_span.entity_type
+                    and rule_span.end - rule_span.start >= model_span.end - model_span.start
+                ):
                     # Rule span that includes extra context (longer) wins.
-                    if rule_span.end - rule_span.start >= model_span.end - model_span.start:
-                        overridden_indices.add(idx)
+                    overridden_indices.add(idx)
 
         # Phase 2: build merged list.
         merged: list[EntitySpan] = []

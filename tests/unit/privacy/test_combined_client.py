@@ -10,7 +10,6 @@ from __future__ import annotations
 from unittest.mock import AsyncMock
 
 import pytest
-
 from neironir.domain.entity_type import EntityType
 from neironir.privacy.client import EntitySpan
 from neironir.privacy.combined import CombinedPrivacyClient
@@ -54,9 +53,7 @@ class TestBasicMerge:
         result = await combined.annotate("Call +7 495 123-45-67 now")
         spans = sorted(result, key=lambda s: s.start)
         for i in range(len(spans) - 1):
-            assert spans[i].end <= spans[i + 1].start, (
-                f"overlapping: {spans[i]} and {spans[i + 1]}"
-            )
+            assert spans[i].end <= spans[i + 1].start, f"overlapping: {spans[i]} and {spans[i + 1]}"
 
 
 class TestDedicatedHandlerIntegration:

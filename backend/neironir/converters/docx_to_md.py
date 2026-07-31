@@ -99,9 +99,7 @@ def _render_table(rows: tuple[tuple[str, ...], ...]) -> str:
 
     header = rows[0]
     widths = [max(len(c) for c in col) for col in zip(*rows, strict=False)]
-    header_line = "| " + " | ".join(
-        c.ljust(w) for c, w in zip(header, widths, strict=False)
-    ) + " |"
+    header_line = "| " + " | ".join(c.ljust(w) for c, w in zip(header, widths, strict=False)) + " |"
     sep_line = "| " + " | ".join("-" * w for w in widths) + " |"
     body_lines = [
         "| " + " | ".join(c.ljust(w) for c, w in zip(row, widths, strict=False)) + " |"

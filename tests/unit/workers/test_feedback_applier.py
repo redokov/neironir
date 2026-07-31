@@ -34,9 +34,7 @@ def _build_md_job(tmp_path: Path, text: str) -> tuple[Path, LocalStorage, Job]:
     return tmp_path, storage, job
 
 
-def _build_docx_job(
-    tmp_path: Path, paragraphs: list[str]
-) -> tuple[Path, LocalStorage, Job]:
+def _build_docx_job(tmp_path: Path, paragraphs: list[str]) -> tuple[Path, LocalStorage, Job]:
     """Create a minimal storage layout with a single completed docx job."""
     storage = LocalStorage(tmp_path)
     job_id = uuid4()
@@ -161,9 +159,7 @@ class TestAddActions:
         # EMAIL2 was replaced by EMAIL4 during the first apply pass
         # because the add action's span covered annotation[1].
         for n in (1, 3, 4, 5):
-            assert f"<PRIVATE_EMAIL{n}>" in result, (
-                f"missing PRIVATE_EMAIL{n} in result"
-            )
+            assert f"<PRIVATE_EMAIL{n}>" in result, f"missing PRIVATE_EMAIL{n} in result"
         # Verify the counter monotonicity: the largest number in the
         # result equals the total number of ADD actions across all
         # calls (2 adds beyond the original 3 emails = 5).
@@ -219,9 +215,7 @@ class TestAddActions:
 
 class TestRejectActions:
     async def test_reject_restores_original_text(self, tmp_path: Path) -> None:
-        job_dir, storage, job = _build_md_job(
-            tmp_path, "Reach me at user@example.com."
-        )
+        job_dir, storage, job = _build_md_job(tmp_path, "Reach me at user@example.com.")
         await _process(job_dir, storage, job)
 
         # The email is annotation index 0 — reject it.

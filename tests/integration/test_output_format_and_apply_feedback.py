@@ -68,7 +68,8 @@ def _wait_completed(client: TestClient, job_id: str) -> dict:
 
 class TestOutputFormatOnUpload:
     def test_default_output_format_matches_source(
-        self, client_and_storage: tuple[TestClient, Path]) -> None:
+        self, client_and_storage: tuple[TestClient, Path]
+    ) -> None:
         client, _ = client_and_storage
         # Default (no form field) — output_ext == source_ext
         r = client.post(
@@ -82,7 +83,8 @@ class TestOutputFormatOnUpload:
         assert body.get("output_ext") in (None, "md")
 
     def test_md_file_with_output_format_md(
-        self, client_and_storage: tuple[TestClient, Path]) -> None:
+        self, client_and_storage: tuple[TestClient, Path]
+    ) -> None:
         client, _ = client_and_storage
         r = client.post(
             "/api/v1/documents/",
@@ -93,7 +95,8 @@ class TestOutputFormatOnUpload:
         assert r.json()["output_ext"] == "md"
 
     def test_docx_with_output_format_md_converts(
-        self, client_and_storage: tuple[TestClient, Path], tmp_path: Path) -> None:
+        self, client_and_storage: tuple[TestClient, Path], tmp_path: Path
+    ) -> None:
         client, storage_dir = client_and_storage
         binary = _build_docx(
             tmp_path / "src.docx",
@@ -422,9 +425,7 @@ class TestApplyFeedbackTrainingDataset:
         assert len(lines) == 1
         record = json.loads(lines[0])
         assert record["text"] == "user@example.com"
-        assert record["spans"] == [
-            {"start": 14, "end": 16, "label": "private_phone"}
-        ]
+        assert record["spans"] == [{"start": 14, "end": 16, "label": "private_phone"}]
 
     def test_reject_only_action_adds_nothing(
         self, client_and_storage: tuple[TestClient, Path]

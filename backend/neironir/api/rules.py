@@ -64,12 +64,12 @@ def _rules_dir(settings: Settings) -> Path:
     return path
 
 
-def _load_rules_meta(storage_dir: Path) -> dict[str, dict]:
+def _load_rules_meta(storage_dir: Path) -> dict[str, dict[str, object]]:
     """Load all rule metadata files from the rules directory.
 
     Returns a dict mapping ``rule_id`` → rule metadata dict.
     """
-    rules: dict[str, dict] = {}
+    rules: dict[str, dict[str, object]] = {}
     for fpath in sorted(storage_dir.glob("rule_*.json")):
         try:
             data = json.loads(fpath.read_text(encoding="utf-8"))
@@ -113,7 +113,7 @@ def _save_rule_meta(storage_dir: Path, rule: ProposedRule) -> str:
 @router.get("")
 async def list_rules(
     settings: Settings = Depends(get_settings),
-) -> list[dict]:
+) -> list[dict[str, object]]:
     """Return all rules: built-in, proposed, approved, rejected."""
     storage_dir = _rules_dir(settings)
     rules = _load_rules_meta(storage_dir)
@@ -123,7 +123,7 @@ async def list_rules(
 @router.get("/stats")
 async def get_stats(
     settings: Settings = Depends(get_settings),
-) -> dict:
+) -> dict[str, object]:
     """Return aggregated feedback statistics across all jobs."""
     analyzer = FeedbackAnalyzer(storage_dir=Path(settings.storage_dir))
     stats = analyzer.compute_stats()
@@ -140,7 +140,7 @@ async def get_stats(
 async def generate_proposals(
     min_occurrences: int = Query(3, ge=1, le=100),
     settings: Settings = Depends(get_settings),
-) -> list[dict]:
+) -> list[dict[str, object]]:
     """Run feedback analysis and return new proposed rules.
 
     Each proposal includes a regex pattern, entity type, evidence count,
@@ -156,19 +156,21 @@ async def generate_proposals(
 
     # Save each proposal to persistent storage.
     storage_dir = _rules_dir(settings)
-    results = []
+    results: list[dict[str, object]] = []
     for proposal in proposals:
         _save_rule_meta(storage_dir, proposal)
-        results.append({
-            "rule_id": proposal.rule_id,
-            "entity_type": proposal.entity_type,
-            "pattern": proposal.pattern,
-            "evidence_count": proposal.evidence_count,
-            "confidence": proposal.confidence,
-            "status": proposal.status,
-            "description": proposal.description,
-            "samples": proposal.samples,
-        })
+        results.append(
+            {
+                "rule_id": proposal.rule_id,
+                "entity_type": proposal.entity_type,
+                "pattern": proposal.pattern,
+                "evidence_count": proposal.evidence_count,
+                "confidence": proposal.confidence,
+                "status": proposal.status,
+                "description": proposal.description,
+                "samples": proposal.samples,
+            }
+        )
 
     logger.info("generated %d rule proposals", len(results))
     return results
@@ -178,7 +180,7 @@ async def generate_proposals(
 async def approve_rule(
     rule_id: str,
     settings: Settings = Depends(get_settings),
-) -> dict:
+) -> dict[str, object]:
     """Approve a proposed rule and make it active.
 
     An approved rule will be compiled and injected into the
@@ -219,7 +221,7 @@ async def approve_rule(
 async def reject_rule(
     rule_id: str,
     settings: Settings = Depends(get_settings),
-) -> dict:
+) -> dict[str, object]:
     """Reject a proposed rule (it will not be used for detection)."""
     storage_dir = _rules_dir(settings)
     rules = _load_rules_meta(storage_dir)
@@ -248,7 +250,7 @@ async def add_manual_rule(
     pattern: str,
     description: str = "",
     settings: Settings = Depends(get_settings),
-) -> dict:
+) -> dict[str, object]:
     """Manually add a custom regex rule.
 
     The rule is immediately saved with status ``approved`` so it will
@@ -271,7 +273,7 @@ async def add_manual_rule(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Invalid regex pattern: {exc}",
-        )
+        ) from exc
 
     proposal = ProposedRule(
         entity_type=entity_type,

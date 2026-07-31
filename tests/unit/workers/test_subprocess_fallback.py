@@ -12,7 +12,6 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-
 from neironir.domain.job import Job, JobStatus
 from neironir.privacy.client import MockPrivacyFilterClient, PrivacyFilterError
 from neironir.storage.local import LocalStorage
@@ -45,6 +44,7 @@ class TestSubprocessFallback:
                 raise NotImplementedError(msg)
 
         from neironir.config import Settings
+
         settings = Settings(session_secret="test", admin_password="test")
 
         await run_job(
@@ -58,9 +58,7 @@ class TestSubprocessFallback:
         assert loaded.status == JobStatus.COMPLETED, (
             f"expected COMPLETED after fallback, got {loaded.status}"
         )
-        assert loaded.processing_note is not None, (
-            "processing_note should be set after fallback"
-        )
+        assert loaded.processing_note is not None, "processing_note should be set after fallback"
         assert len(loaded.processing_note) > 20, (
             "processing_note should contain a meaningful message"
         )
@@ -91,8 +89,10 @@ class TestSubprocessFallback:
                 raise FileNotFoundError("opf.exe not found")
 
         from neironir.config import Settings as Cfg
+
         settings = Cfg(
-            session_secret="test", admin_password="test",
+            session_secret="test",
+            admin_password="test",
         )
         await run_job(
             job_id,
@@ -127,8 +127,10 @@ class TestSubprocessFallback:
                 raise PrivacyFilterError("opf timeout after 120.0s")
 
         from neironir.config import Settings as Cfg
+
         settings = Cfg(
-            session_secret="test", admin_password="test",
+            session_secret="test",
+            admin_password="test",
         )
         await run_job(
             job_id,
@@ -145,8 +147,9 @@ class TestSubprocessFallback:
     async def test_fallback_result_contains_mock_annotations(self, tmp_path: Path) -> None:
         """After fallback to mock, the result file should contain
         mock-detected placeholders (e.g. ``<PRIVATE_EMAIL1>``)."""
-        from neironir.workers.pipeline import run_job
         import json
+
+        from neironir.workers.pipeline import run_job
 
         storage = LocalStorage(tmp_path)
         job_id = uuid4()
@@ -164,8 +167,10 @@ class TestSubprocessFallback:
                 raise PrivacyFilterError("opf timeout")
 
         from neironir.config import Settings as Cfg
+
         settings = Cfg(
-            session_secret="test", admin_password="test",
+            session_secret="test",
+            admin_password="test",
         )
         await run_job(
             job_id,
@@ -192,12 +197,13 @@ class TestRuntimeSettings:
     def test_default_timeout_from_env(self) -> None:
         """Without runtime settings file, uses the env default (600)."""
         from neironir.config import Settings
+
         s = Settings()
         assert s.privacy_filter_timeout == 600
 
     def test_save_and_load_runtime_timeout(self, tmp_path: Path) -> None:
         """Saving a timeout via the admin API persists it and it loads correctly."""
-        from neironir.admin.router import _save_runtime_timeout, _load_runtime_timeout
+        from neironir.admin.router import _load_runtime_timeout, _save_runtime_timeout
 
         _save_runtime_timeout(tmp_path, 300)
         loaded = _load_runtime_timeout(tmp_path)
@@ -206,26 +212,30 @@ class TestRuntimeSettings:
     def test_runtime_timeout_used_by_subprocess_client(self, tmp_path: Path) -> None:
         """When runtime_settings.json exists, _build_subprocess_client
         uses the override timeout instead of the env default."""
-        from neironir.api.dependencies import _build_subprocess_client
         from neironir.admin.router import _save_runtime_timeout
-
+        from neironir.api.dependencies import _build_subprocess_client
         from neironir.config import Settings as Cfg
+
         _save_runtime_timeout(tmp_path, 42)
         settings = Cfg(
-            session_secret="test", admin_password="test",
+            session_secret="test",
+            admin_password="test",
             storage_dir=str(tmp_path),
             privacy_filter_cmd="opf",
             privacy_filter_timeout=600,
         )
         client = _build_subprocess_client(settings)
-        assert client._timeout_s == 42.0, (
-            f"expected timeout 42.0, got {client._timeout_s}"
-        )
+        assert client._timeout_s == 42.0, f"expected timeout 42.0, got {client._timeout_s}"
 
     def test_runtime_timeout_saves_and_loads_roundtrip(self, tmp_path: Path) -> None:
         """Round-trip: save, load, verify."""
         import json
-        from neironir.admin.router import _save_runtime_timeout, _load_runtime_timeout, _RUNTIME_SETTINGS_FILE
+
+        from neironir.admin.router import (
+            _RUNTIME_SETTINGS_FILE,
+            _load_runtime_timeout,
+            _save_runtime_timeout,
+        )
 
         _save_runtime_timeout(tmp_path, 999)
         path = tmp_path / _RUNTIME_SETTINGS_FILE

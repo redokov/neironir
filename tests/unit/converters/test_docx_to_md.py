@@ -426,12 +426,14 @@ class TestRealWorldFixture:
 
     def test_no_autolink_wrappers(self, fixture_docx: Path) -> None:
         import re
+
         md = convert_to_markdown(fixture_docx)
         # No ``<email>`` autolink syntax survives.
         assert not re.search(r"<[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}>", md)
 
     def test_no_pandoc_mark_class(self, fixture_docx: Path) -> None:
         import re
+
         md = convert_to_markdown(fixture_docx)
         # The previous pandoc output left ``[text]{.mark}`` style
         # attributes everywhere — the new converter doesn't emit any
@@ -442,8 +444,7 @@ class TestRealWorldFixture:
         """The output must contain the email so the privacy filter
         can find it."""
         import re
+
         md = convert_to_markdown(fixture_docx)
-        emails = re.findall(
-            r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", md
-        )
+        emails = re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", md)
         assert "a@b.com" in emails

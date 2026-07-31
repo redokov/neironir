@@ -106,11 +106,7 @@ async def get_mode(
     output.
     """
     mode = settings.privacy_filter_mode
-    detected = (
-        list(_MOCK_DETECTED_TYPES)
-        if mode == "mock"
-        else list(_FULL_DETECTED_TYPES)
-    )
+    detected = list(_MOCK_DETECTED_TYPES) if mode == "mock" else list(_FULL_DETECTED_TYPES)
     return ModeInfoResponse(
         privacy_filter_mode=mode,
         detected_types=detected,
@@ -409,13 +405,10 @@ async def apply_feedback(
     # admins don't have to wait for the next training run to harvest
     # the signal.
     dataset_path = _training_dataset_path(settings)
-    training_records_added = append_job_feedback_to_dataset(
-        storage.job_dir(job_id), dataset_path
-    )
+    training_records_added = append_job_feedback_to_dataset(storage.job_dir(job_id), dataset_path)
 
     logger.info(
-        "applied feedback for job %s: %d add, %d reject, %d confirm; "
-        "%d new training record(s)",
+        "applied feedback for job %s: %d add, %d reject, %d confirm; %d new training record(s)",
         job_id,
         summary.added,
         summary.rejected,
@@ -534,10 +527,7 @@ def _validate_output_format(
         raise _http_error(
             status.HTTP_400_BAD_REQUEST,
             code="unsupported_output_format",
-            message=(
-                f"output_format={output_format!r} is not one of "
-                f"'md' or 'docx'."
-            ),
+            message=(f"output_format={output_format!r} is not one of 'md' or 'docx'."),
         )
     if source_ext == output_format:
         return output_format  # type: ignore[return-value]

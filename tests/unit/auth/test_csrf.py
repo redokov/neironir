@@ -86,27 +86,16 @@ class TestGenerateAndVerify:
         )
 
     def test_verify_both_missing(self) -> None:
-        assert (
-            verify_csrf_token(
-                header_token=None, cookie_token=None, secret=_TEST_SECRET
-            )
-            is False
-        )
+        assert verify_csrf_token(header_token=None, cookie_token=None, secret=_TEST_SECRET) is False
 
     def test_verify_one_missing(self) -> None:
         sid = new_csrf_session_id()
         signed = _signed(sid)
         assert (
-            verify_csrf_token(
-                header_token=signed, cookie_token=None, secret=_TEST_SECRET
-            )
-            is False
+            verify_csrf_token(header_token=signed, cookie_token=None, secret=_TEST_SECRET) is False
         )
         assert (
-            verify_csrf_token(
-                header_token=None, cookie_token=signed, secret=_TEST_SECRET
-            )
-            is False
+            verify_csrf_token(header_token=None, cookie_token=signed, secret=_TEST_SECRET) is False
         )
 
     def test_verify_too_short(self) -> None:
@@ -120,12 +109,7 @@ class TestGenerateAndVerify:
         )
 
     def test_verify_empty(self) -> None:
-        assert (
-            verify_csrf_token(
-                header_token="", cookie_token="", secret=_TEST_SECRET
-            )
-            is False
-        )
+        assert verify_csrf_token(header_token="", cookie_token="", secret=_TEST_SECRET) is False
 
     def test_verify_wrong_secret(self) -> None:
         """A token signed with one secret must not verify with another."""

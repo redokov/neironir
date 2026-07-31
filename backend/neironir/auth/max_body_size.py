@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp
 
 
@@ -34,7 +34,7 @@ class MaxBodySizeMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self._max_bytes = max_bytes
 
-    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint):
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         # Guard all unsafe-method requests (POST, PUT, PATCH, DELETE)
         # against oversized payloads. Chunked encoding without
         # Content-Length is not caught here — the endpoint-level

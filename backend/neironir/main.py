@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 
 from fastapi import FastAPI, Request
 from fastapi.responses import Response
@@ -12,8 +13,8 @@ from neironir.admin.router import router as admin_router
 from neironir.api import jobs, rules, ui
 from neironir.api.auth import router as auth_router
 from neironir.api.dependencies import get_privacy, get_settings, get_storage
-from neironir.auth.middleware import AdminUIAuthMiddleware
 from neironir.auth.max_body_size import MaxBodySizeMiddleware
+from neironir.auth.middleware import AdminUIAuthMiddleware
 from neironir.config import Settings
 
 
@@ -70,16 +71,13 @@ def create_app() -> FastAPI:
     # endpoints under /api/v1/admin and /api/v1/rules are protected
     # via ``Depends(require_admin_auth)`` on the routers themselves.
     if settings.session_secret:
-        app.add_middleware(
-            AdminUIAuthMiddleware,
-            cookie_name=settings.session_cookie_name,
-            secret=settings.session_secret,
-            max_age=settings.session_max_age,
-        )
+        app.add_middleware(AdminUIAuthMiddleware)
 
     # Security headers middleware — applied to every response.
     @app.middleware("http")
-    async def add_security_headers(request: Request, call_next) -> Response:
+    async def add_security_headers(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"

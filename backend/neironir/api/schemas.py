@@ -130,8 +130,14 @@ class ModeInfoResponse(BaseModel):
 
 
 __all__ = [
-    "JobResponse", "HealthResponse", "ErrorResponse",
-    "AnnotationSpan", "AnnotationsResponse",
-    "FeedbackItemIn", "FeedbackSubmit", "FeedbackResponse",
-    "ApplyFeedbackResponse", "ModeInfoResponse",
+    "JobResponse",
+    "HealthResponse",
+    "ErrorResponse",
+    "AnnotationSpan",
+    "AnnotationsResponse",
+    "FeedbackItemIn",
+    "FeedbackSubmit",
+    "FeedbackResponse",
+    "ApplyFeedbackResponse",
+    "ModeInfoResponse",
 ]

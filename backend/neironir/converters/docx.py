@@ -227,6 +227,7 @@ def _slice_elements(
     cell where it starts, and a warning is logged for the dropped tail.
     """
     import logging
+
     logger = logging.getLogger(__name__)
 
     rewritten = list(texts)
@@ -251,11 +252,13 @@ def _slice_elements(
                 local_end = min(len(element_text), local_end)
                 if clipped_count <= 3:
                     logger.warning(
-                        "replacement %s clipped: start=%d end=%d "
-                        "elem_len=%d local=%d..%d",
+                        "replacement %s clipped: start=%d end=%d elem_len=%d local=%d..%d",
                         replacement.entity_type,
-                        replacement.start, replacement.end,
-                        len(element_text), local_start, local_end,
+                        replacement.start,
+                        replacement.end,
+                        len(element_text),
+                        local_start,
+                        local_end,
                     )
             # Allow both zero-length (insert) and positive-length
             # (replace) replacements.
@@ -275,10 +278,10 @@ def _slice_elements(
                 clipped_count += 1
                 if clipped_count <= 3:
                     logger.warning(
-                        "replacement %s entirely outside element: "
-                        "start=%d end=%d elem_len=%d",
+                        "replacement %s entirely outside element: start=%d end=%d elem_len=%d",
                         replacement.entity_type,
-                        replacement.start, replacement.end,
+                        replacement.start,
+                        replacement.end,
                         len(element_text),
                     )
 
@@ -311,6 +314,7 @@ def _replace_text(element: Paragraph, new_text: str) -> None:
     and URLs to hyperlinks, and their text survives ``runs`` clearing.
     """
     from docx.oxml.ns import qn
+
     runs = getattr(element, "runs", None)
     if runs is None:
         raise AttributeError("element has no 'runs' attribute")
@@ -345,6 +349,7 @@ def _set_cell_text(table: Table, cell_idx: int | None, new_text: str) -> None:
     single paragraph.  Hyperlinks are also removed from all paragraphs.
     """
     from docx.oxml.ns import qn
+
     hyperlink_tag = qn("w:hyperlink")
 
     count = 0

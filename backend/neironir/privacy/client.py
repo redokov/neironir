@@ -220,7 +220,10 @@ class SubprocessPrivacyFilterClient:
         # after the JSON payload — strip everything after the first complete
         # JSON object.
         json_end = _find_json_end(raw_text)
-        payload = json.loads(raw_text[:json_end])
+        try:
+            payload = json.loads(raw_text[:json_end])
+        except json.JSONDecodeError as exc:
+            raise PrivacyFilterError(f"opf returned non-JSON output: {raw_text[:200]!r}") from exc
         self._validate_schema_version(payload)
         return [
             EntitySpan(start=int(span["start"]), end=int(span["end"]), entity_type=entity_type)
@@ -329,7 +332,10 @@ def _decode_opf_output(data: bytes) -> str:
             return data.decode(encoding)
         except UnicodeDecodeError as exc:
             raise UnicodeDecodeError(
-                exc.encoding, exc.object, exc.start, exc.end,
+                exc.encoding,
+                exc.object,
+                exc.start,
+                exc.end,
                 f"opf output is neither valid UTF-8 nor valid {encoding}. "
                 "Set PYTHONIOENCODING=utf-8 before launching the server.",
             ) from exc

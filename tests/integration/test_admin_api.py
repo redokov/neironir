@@ -15,14 +15,14 @@ import pytest
 from fastapi.testclient import TestClient
 from neironir.admin.training import reset_training_state
 from neironir.api.dependencies import get_privacy, get_settings, get_storage
-from neironir.domain.job import Job, JobStatus
-from neironir.main import create_app
-from neironir.privacy.client import MockPrivacyFilterClient
-from neironir.storage.local import LocalStorage
 
 # Override auth dependencies so integration tests don't need real cookies.
 from neironir.auth.dependencies import require_admin_auth, verify_csrf
 from neironir.auth.session import SESSION_PAYLOAD_KEY, sign_session_cookie
+from neironir.domain.job import Job, JobStatus
+from neironir.main import create_app
+from neironir.privacy.client import MockPrivacyFilterClient
+from neironir.storage.local import LocalStorage
 
 
 def _write_feedback_job(
@@ -120,6 +120,9 @@ def client_and_storage(
     app.dependency_overrides[get_settings] = lambda: real_settings
     app.dependency_overrides[get_storage] = lambda: storage
     app.dependency_overrides[get_privacy] = lambda: privacy
+    # Keep the admin-UI middleware in sync with the overridden settings
+    # (it reads ``request.app.state.settings`` per request).
+    app.state.settings = real_settings
     # Bypass auth for integration tests — the e2e tests cover auth properly.
     app.dependency_overrides[require_admin_auth] = lambda: {"is_admin": True, "user": "test"}
     app.dependency_overrides[verify_csrf] = lambda: None
@@ -307,6 +310,7 @@ class TestAdminTrainingEndpoints:
         # We quote the script via JSON so that embedded quotes survive
         # ``shlex.split`` on Windows.
         import json as _json
+
         script = "print('epoch=1 loss=0.1')"
         cmd = f"{sys.executable} -c {_json.dumps(script)}"
         settings_handle.set_cmd(cmd)
@@ -347,6 +351,7 @@ class TestAdminTrainingEndpoints:
         # Sleep long enough that the second POST finds the state still
         # in ``RUNNING``.
         import json as _json
+
         script = "import time; time.sleep(30)"
         cmd = f"{sys.executable} -c {_json.dumps(script)}"
         settings_handle.set_cmd(cmd)

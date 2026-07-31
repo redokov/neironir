@@ -325,9 +325,7 @@ class TestStateSerialization:
 
 class TestStartTrainingFromFeedback:
     @pytest.mark.asyncio
-    async def test_marks_failed_when_no_feedback(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_marks_failed_when_no_feedback(self, tmp_path: Path) -> None:
         storage = tmp_path / "empty"
         storage.mkdir()
         out = tmp_path / "out"
@@ -343,9 +341,7 @@ class TestStartTrainingFromFeedback:
         assert state.error is not None
 
     @pytest.mark.asyncio
-    async def test_starts_with_real_dataset(
-        self, feedback_dir: Path, tmp_path: Path
-    ) -> None:
+    async def test_starts_with_real_dataset(self, feedback_dir: Path, tmp_path: Path) -> None:
         out = tmp_path / "out"
         out.mkdir()
         state = await training.start_training_from_feedback(
@@ -379,14 +375,20 @@ class TestStartTrainingFromFeedback:
         checkpoints.mkdir(parents=True)
         cumulative = checkpoints / "training_dataset.jsonl"
         cumulative.write_text(
-            json.dumps({
-                "text": "Email: a@b.com",
-                "spans": [{"start": 7, "end": 14, "label": "private_email"}],
-            }) + "\n"
-            + json.dumps({
-                "text": "Email: a@b.com",
-                "spans": [{"start": 7, "end": 14, "label": "private_email"}],
-            }) + "\n",
+            json.dumps(
+                {
+                    "text": "Email: a@b.com",
+                    "spans": [{"start": 7, "end": 14, "label": "private_email"}],
+                }
+            )
+            + "\n"
+            + json.dumps(
+                {
+                    "text": "Email: a@b.com",
+                    "spans": [{"start": 7, "end": 14, "label": "private_email"}],
+                }
+            )
+            + "\n",
             encoding="utf-8",
         )
 

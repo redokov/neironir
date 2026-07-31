@@ -23,9 +23,6 @@ from pathlib import Path
 from fastapi import Depends
 
 from neironir.config import Settings
-
-
-logger = logging.getLogger(__name__)
 from neironir.privacy.client import (
     MockPrivacyFilterClient,
     PrivacyFilterClient,
@@ -34,6 +31,8 @@ from neironir.privacy.client import (
 from neironir.privacy.combined import CombinedPrivacyClient
 from neironir.privacy.rules import RuleBasedDetector
 from neironir.storage.local import LocalStorage
+
+logger = logging.getLogger(__name__)
 
 
 @lru_cache(maxsize=1)
@@ -78,6 +77,7 @@ def _probe_subprocess() -> bool:
     # A running loop is present (e.g. uvicorn startup).  Schedule the
     # probe as a task and wait synchronously.
     import concurrent.futures
+
     future = asyncio.run_coroutine_threadsafe(_probe_coro(), loop)
     try:
         future.result(timeout=10)
@@ -91,7 +91,10 @@ def _probe_subprocess() -> bool:
 async def _probe_coro() -> None:
     """Quick async subprocess probe."""
     proc = await asyncio.create_subprocess_exec(
-        "cmd", "/c", "exit", "0",
+        "cmd",
+        "/c",
+        "exit",
+        "0",
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
     )
@@ -140,8 +143,7 @@ def get_privacy(settings: Settings = Depends(get_settings)) -> PrivacyFilterClie
         )
     else:
         raise ValueError(
-            f"Unknown privacy_filter_mode {mode!r}; "
-            f"expected 'mock', 'subprocess', or 'combined'."
+            f"Unknown privacy_filter_mode {mode!r}; expected 'mock', 'subprocess', or 'combined'."
         )
     return _privacy_client
 
@@ -158,6 +160,7 @@ def _build_subprocess_client(settings: Settings) -> SubprocessPrivacyFilterClien
     timeout_s = float(settings.privacy_filter_timeout)
     try:
         import json
+
         runtime_path = Path(settings.storage_dir) / "runtime_settings.json"
         if runtime_path.is_file():
             data = json.loads(runtime_path.read_text(encoding="utf-8"))

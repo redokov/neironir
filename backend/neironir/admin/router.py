@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+from contextlib import suppress
 from datetime import UTC
 from pathlib import Path
 from uuid import UUID
@@ -248,10 +249,8 @@ async def get_runtime_settings(
 ) -> dict[str, object]:
     """Return the currently active runtime settings (timeout, etc.)."""
     timeout = settings.privacy_filter_timeout
-    try:
+    with suppress(FileNotFoundError, json.JSONDecodeError):
         timeout = _load_runtime_timeout(Path(settings.storage_dir))
-    except (FileNotFoundError, json.JSONDecodeError):
-        pass
     return {
         "privacy_filter_timeout": timeout,
     }
@@ -268,9 +267,7 @@ async def update_runtime_settings(
     """Update runtime settings (timeout in seconds)."""
     timeout_raw = payload.get("privacy_filter_timeout")
     if timeout_raw is not None:
-        try:
-            timeout = int(timeout_raw)
-        except (ValueError, TypeError):
+        if not isinstance(timeout_raw, (int, str)):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=ErrorResponse(
@@ -278,6 +275,16 @@ async def update_runtime_settings(
                     message="privacy_filter_timeout must be an integer (seconds).",
                 ).model_dump(),
             )
+        try:
+            timeout = int(timeout_raw)
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=ErrorResponse(
+                    code="invalid_timeout",
+                    message="privacy_filter_timeout must be an integer (seconds).",
+                ).model_dump(),
+            ) from exc
         if timeout < 10 or timeout > 86400:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

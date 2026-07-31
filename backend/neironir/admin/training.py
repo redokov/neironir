@@ -31,6 +31,7 @@ import os
 import re
 import shlex
 import threading
+from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
@@ -284,9 +285,8 @@ def append_job_feedback_to_dataset(
         appended += 1
 
     if pending_records:
-        with _DATASET_APPEND_LOCK:
-            with dataset_path.open("a", encoding="utf-8") as out:
-                out.writelines(pending_records)
+        with _DATASET_APPEND_LOCK, dataset_path.open("a", encoding="utf-8") as out:
+            out.writelines(pending_records)
     return appended
 
 
@@ -350,15 +350,19 @@ async def start_training(spec: TrainingCommandSpec) -> TrainingState:
         if spec.dataset_path is None or spec.output_dir is None:
             raise ValueError("dataset_path and output_dir must be provided")
 
-        cmd = list(spec.opf_cmd) + [
-            "train",
-            "--data",
-            str(spec.dataset_path),
-            "--output",
-            str(spec.output_dir),
-            "--epochs",
-            str(spec.epochs),
-        ] + list(spec.extra_args)
+        cmd = (
+            list(spec.opf_cmd)
+            + [
+                "train",
+                "--data",
+                str(spec.dataset_path),
+                "--output",
+                str(spec.output_dir),
+                "--epochs",
+                str(spec.epochs),
+            ]
+            + list(spec.extra_args)
+        )
 
         logger.info("launching opf train: %s", " ".join(shlex.quote(c) for c in cmd))
         proc = await asyncio.create_subprocess_exec(
@@ -454,7 +458,11 @@ async def _monitor(proc: asyncio.subprocess.Process, timeout_seconds: int = 1080
                     with contextlib.suppress(ValueError):
                         loss = float(match.group(2))
                 if eta_match:
-                    h, m_val, s_val = (int(eta_match.group(1)), int(eta_match.group(2)), int(eta_match.group(3)))
+                    h, m_val, s_val = (
+                        int(eta_match.group(1)),
+                        int(eta_match.group(2)),
+                        int(eta_match.group(3)),
+                    )
                     eta = h * 3600 + m_val * 60 + s_val
                 _STATE.progress = TrainingProgress(
                     epoch=epoch,
@@ -479,7 +487,7 @@ async def _monitor(proc: asyncio.subprocess.Process, timeout_seconds: int = 1080
             asyncio.gather(_read_stdout(), _read_stderr()),
             timeout=timeout_seconds,
         )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.warning("opf train timed out after %s seconds — terminating", timeout_seconds)
         proc.terminate()
         await proc.wait()
@@ -545,14 +553,16 @@ async def start_training_from_feedback(
     combined_by_type: dict[str, int] = {}
     pending_lines: list[str] = []
 
-    def _append(record: dict) -> None:
+    def _append(record: dict[str, object]) -> None:
         nonlocal combined_count
-        spans = record.get("spans", [])
-        if not spans:
+        spans = record.get("spans") or []
+        if not isinstance(spans, list) or not spans:
             return
         span = spans[0]
+        if not isinstance(span, dict):
+            return
         key = (
-            record.get("text", ""),
+            str(record.get("text", "")),
             int(span.get("start", 0)),
             int(span.get("end", 0)),
             str(span.get("label", "")),
@@ -577,9 +587,7 @@ async def start_training_from_feedback(
         os.replace(str(tmp_combined), str(combined_path))
 
     # 1) Drain the cumulative file written by apply-feedback.
-    cumulative_path = (
-        storage_dir / "checkpoints" / CUMULATIVE_DATASET_NAME
-    )
+    cumulative_path = storage_dir / "checkpoints" / CUMULATIVE_DATASET_NAME
     if cumulative_path.is_file():
         try:
             with cumulative_path.open("r", encoding="utf-8") as fh:
@@ -606,11 +614,8 @@ async def start_training_from_feedback(
     # ``build_training_dataset`` is synchronous I/O-heavy — run it
     # in the default thread pool to avoid blocking the event loop.
     loop = asyncio.get_running_loop()
-    try:
+    with suppress(FileNotFoundError):
         await loop.run_in_executor(None, build_training_dataset, storage_dir, output_dir)
-    except FileNotFoundError:
-        # No fresh feedback — that's fine.
-        pass
 
     fresh_path = output_dir / "feedback_dataset.jsonl"
     if fresh_path != combined_path and fresh_path.is_file():
@@ -625,10 +630,8 @@ async def start_training_from_feedback(
                     except json.JSONDecodeError:
                         continue
         finally:
-            try:
+            with suppress(OSError):
                 fresh_path.unlink()
-            except OSError:
-                pass
 
     # Flush buffered lines to the combined dataset atomically.
     _flush()

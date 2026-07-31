@@ -9,11 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-from unittest.mock import AsyncMock, MagicMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
-from neironir.privacy.client import SubprocessPrivacyFilterClient
+from neironir.privacy.client import PrivacyFilterError, SubprocessPrivacyFilterClient
 
 
 @pytest.fixture
@@ -43,6 +42,7 @@ def _make_mock_proc(
     # ``communicate()`` is the primary read path used by the client.
     async def _communicate() -> tuple[bytes, bytes]:
         return stdout_bytes, stderr_bytes
+
     proc.communicate = _communicate
 
     # Stub the pipe attributes (some code paths reference them directly).
@@ -55,13 +55,15 @@ def _make_mock_proc(
 class TestSubprocessAnnotate:
     async def test_annotate_returns_spans(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Valid JSON output from opf should be parsed into EntitySpan."""
-        opf_output = json.dumps({
-            "schema_version": 1,
-            "text": "Call me at +7 495 123-45-67",
-            "detected_spans": [
-                {"start": 11, "end": 26, "label": "private_phone", "text": "+7 495 123-45-67"},
-            ],
-        }).encode("utf-8")
+        opf_output = json.dumps(
+            {
+                "schema_version": 1,
+                "text": "Call me at +7 495 123-45-67",
+                "detected_spans": [
+                    {"start": 11, "end": 26, "label": "private_phone", "text": "+7 495 123-45-67"},
+                ],
+            }
+        ).encode("utf-8")
         mock_proc = _make_mock_proc(stdout_bytes=opf_output)
         monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=mock_proc))
 
@@ -75,7 +77,9 @@ class TestSubprocessAnnotate:
 
     async def test_annotate_empty_output(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Valid JSON with no spans should work (no PII detected)."""
-        opf_output = json.dumps({"schema_version": 1, "text": "Hello world", "detected_spans": []}).encode("utf-8")
+        opf_output = json.dumps(
+            {"schema_version": 1, "text": "Hello world", "detected_spans": []}
+        ).encode("utf-8")
         mock_proc = _make_mock_proc(stdout_bytes=opf_output)
         monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=mock_proc))
 
@@ -94,24 +98,26 @@ class TestSubprocessAnnotate:
 
         client = SubprocessPrivacyFilterClient(opf_cmd=["opf"], device="cpu")
         # The client wraps the process error in PrivacyFilterError.
-        with pytest.raises(Exception):
+        with pytest.raises(PrivacyFilterError):
             await client.annotate("some text")
 
     async def test_timeout_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """If the subprocess hangs past the timeout, the client should
         raise an error (PrivacyFilterError or asyncio.TimeoutError)."""
         mock_proc = _make_mock_proc(stdout_bytes=b"", returncode=0)
+
         # Simulate a hang by making communicate never return.
         async def _never() -> tuple[bytes, bytes]:
             await asyncio.Event().wait()  # never resolves
             return b"", b""
+
         mock_proc.communicate = _never
         monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=mock_proc))
 
         # The client reads output in the event loop; with a short
         # timeout, it should eventually raise.
         client = SubprocessPrivacyFilterClient(opf_cmd=["opf"], device="cpu", timeout_s=0.001)
-        with pytest.raises((asyncio.TimeoutError, Exception)):
+        with pytest.raises((asyncio.TimeoutError, PrivacyFilterError)):
             await client.annotate("test")
 
     async def test_invalid_json_output(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -120,5 +126,5 @@ class TestSubprocessAnnotate:
         monkeypatch.setattr(asyncio, "create_subprocess_exec", AsyncMock(return_value=mock_proc))
 
         client = SubprocessPrivacyFilterClient(opf_cmd=["opf"], device="cpu")
-        with pytest.raises(Exception):
+        with pytest.raises(PrivacyFilterError):
             await client.annotate("test")

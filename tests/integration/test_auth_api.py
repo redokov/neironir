@@ -12,10 +12,8 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-
 from neironir.api.dependencies import get_privacy, get_settings, get_storage
 from neironir.auth.dependencies import require_admin_auth, verify_csrf
-from neironir.auth.session import SESSION_PAYLOAD_KEY, read_session_cookie
 from neironir.config import Settings
 from neironir.main import create_app
 from neironir.privacy.client import MockPrivacyFilterClient
@@ -46,11 +44,12 @@ def client(tmp_path: Path) -> Generator[TestClient, None, None]:
     app.dependency_overrides[get_settings] = lambda: real_settings
     app.dependency_overrides[get_storage] = lambda: storage
     app.dependency_overrides[get_privacy] = lambda: privacy
+    # Keep the admin-UI middleware in sync with the overridden settings
+    # (it reads ``request.app.state.settings`` per request).
+    app.state.settings = real_settings
     # Bypass auth guards on admin/rules endpoints so we can verify the
     # login flow itself (which is not protected by these dep overrides).
-    app.dependency_overrides[require_admin_auth] = lambda: {
-        "is_admin": True, "user": TEST_USER
-    }
+    app.dependency_overrides[require_admin_auth] = lambda: {"is_admin": True, "user": TEST_USER}
     app.dependency_overrides[verify_csrf] = lambda: None
 
     with TestClient(app) as c:
