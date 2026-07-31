@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import shutil
 import sys
 import time
 from collections.abc import Generator
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from neironir.admin.training import reset_training_state
+from neironir.admin.training import get_training_state, reset_training_state
 from neironir.api.dependencies import get_privacy, get_settings, get_storage
 
 # Override auth dependencies so integration tests don't need real cookies.
@@ -35,13 +36,14 @@ def _write_feedback_job(
     text: str = "Reach me at user@example.com",
     annotations: list[dict] | None = None,
     error: str | None = None,
+    created_at: datetime | None = None,
 ) -> str:
     """Persist a synthetic completed job (and optionally feedback)."""
     job_id = str(uuid4())
     job_dir = storage_dir / "jobs" / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
 
-    now = datetime.now()
+    now = created_at or datetime.now()
     job = Job(
         id=job_id,
         status=status,
@@ -215,6 +217,44 @@ class TestAdminDocuments:
         assert r.status_code == 200
         assert len(r.json()) == 2
 
+    def test_documents_sorted_most_recent_first(
+        self, client_and_storage: tuple[TestClient, Path, _SettingsHandle]
+    ) -> None:
+        """BUG-1 regression: rows must be ordered by finished_at desc —
+        job directory names are random UUIDs, not timestamps."""
+        client, storage, _h = client_and_storage
+        base = datetime.now()
+        ids: dict[int, str] = {}
+        for days_ago in (5, 1, 3):
+            ids[days_ago] = _write_feedback_job(
+                storage,
+                status=JobStatus.COMPLETED,
+                with_feedback=True,
+                created_at=base - timedelta(days=days_ago),
+            )
+
+        rows = client.get("/api/v1/admin/documents").json()
+        assert [r["job_id"] for r in rows] == [ids[1], ids[3], ids[5]]
+
+    def test_documents_limit_keeps_most_recent(
+        self, client_and_storage: tuple[TestClient, Path, _SettingsHandle]
+    ) -> None:
+        """The limit must keep the most recent N jobs, not an arbitrary
+        subset in directory-iteration order."""
+        client, storage, _h = client_and_storage
+        base = datetime.now()
+        ids: dict[int, str] = {}
+        for days_ago in range(4):
+            ids[days_ago] = _write_feedback_job(
+                storage,
+                status=JobStatus.COMPLETED,
+                with_feedback=True,
+                created_at=base - timedelta(days=days_ago),
+            )
+
+        rows = client.get("/api/v1/admin/documents?limit=2").json()
+        assert [r["job_id"] for r in rows] == [ids[0], ids[1]]
+
     def test_documents_detail(
         self, client_and_storage: tuple[TestClient, Path, _SettingsHandle]
     ) -> None:
@@ -250,6 +290,82 @@ class TestAdminDocuments:
         r = client.get(f"/api/v1/admin/documents/{missing}")
         assert r.status_code == 404
         assert r.json()["detail"]["code"] == "not_found"
+
+    def test_documents_detail_corrupt_job_json(
+        self, client_and_storage: tuple[TestClient, Path, _SettingsHandle]
+    ) -> None:
+        """A corrupt job.json must produce a clean 500 envelope, not an
+        unhandled ``JSONDecodeError`` traceback."""
+        client, storage, _h = client_and_storage
+        job_id = _write_feedback_job(storage, status=JobStatus.COMPLETED, with_feedback=True)
+        (storage / "jobs" / job_id / "job.json").write_text("{not json", encoding="utf-8")
+
+        r = client.get(f"/api/v1/admin/documents/{job_id}")
+        assert r.status_code == 500
+        assert r.json()["detail"]["code"] == "corrupt_job_metadata"
+
+
+class TestAdminRuntimeSettings:
+    def test_get_settings_returns_env_default(
+        self, client_and_storage: tuple[TestClient, Path, _SettingsHandle]
+    ) -> None:
+        client, _s, handle = client_and_storage
+        r = client.get("/api/v1/admin/settings")
+        assert r.status_code == 200
+        assert r.json()["privacy_filter_timeout"] == handle._base.privacy_filter_timeout
+
+    def test_put_settings_persists_to_disk(
+        self, client_and_storage: tuple[TestClient, Path, _SettingsHandle]
+    ) -> None:
+        client, storage, _h = client_and_storage
+        r = client.put("/api/v1/admin/settings", json={"privacy_filter_timeout": 300})
+        assert r.status_code == 200, r.text
+        assert r.json()["privacy_filter_timeout"] == 300
+
+        data = json.loads((storage / "runtime_settings.json").read_text(encoding="utf-8"))
+        assert data["privacy_filter_timeout"] == 300
+
+        # GET must reflect the persisted override.
+        body = client.get("/api/v1/admin/settings").json()
+        assert body["privacy_filter_timeout"] == 300
+
+    def test_put_settings_applies_to_live_client(
+        self,
+        client_and_storage: tuple[TestClient, Path, _SettingsHandle],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """BUG-2 regression: the endpoint must retune the live privacy
+        client singleton, not just persist the file."""
+        client, _s, _h = client_and_storage
+        calls: list[float] = []
+
+        def fake_update(timeout_s: float) -> bool:
+            calls.append(timeout_s)
+            return True
+
+        # NOTE: ``neironir.admin.router`` as a *package attribute* is the
+        # APIRouter instance (re-exported in ``__init__``), so a dotted
+        # string path would resolve to it instead of the module.
+        router_module = importlib.import_module("neironir.admin.router")
+        monkeypatch.setattr(router_module, "update_privacy_timeout", fake_update)
+
+        r = client.put("/api/v1/admin/settings", json={"privacy_filter_timeout": 300})
+        assert r.status_code == 200, r.text
+        assert calls == [300.0]
+
+    def test_put_settings_rejects_non_scalar(
+        self, client_and_storage: tuple[TestClient, Path, _SettingsHandle]
+    ) -> None:
+        client, _s, _h = client_and_storage
+        r = client.put("/api/v1/admin/settings", json={"privacy_filter_timeout": [300]})
+        assert r.status_code == 422
+
+    def test_put_settings_rejects_out_of_range(
+        self, client_and_storage: tuple[TestClient, Path, _SettingsHandle]
+    ) -> None:
+        client, _s, _h = client_and_storage
+        r = client.put("/api/v1/admin/settings", json={"privacy_filter_timeout": 5})
+        assert r.status_code == 422
 
 
 class TestAdminTrainingEndpoints:
@@ -373,6 +489,32 @@ class TestAdminTrainingEndpoints:
             if cur["status"] != "running":
                 break
             time.sleep(0.1)
+
+
+    def test_start_uses_runtime_timeout_override(
+        self,
+        client_and_storage: tuple[TestClient, Path, _SettingsHandle],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The training subprocess must honour the same runtime timeout
+        override as the annotation path."""
+        client, storage, _h = client_and_storage
+        (storage / "runtime_settings.json").write_text(
+            json.dumps({"privacy_filter_timeout": 999}),
+            encoding="utf-8",
+        )
+        captured: dict[str, object] = {}
+
+        async def fake_start(**kwargs: object) -> object:
+            captured.update(kwargs)
+            return get_training_state()
+
+        router_module = importlib.import_module("neironir.admin.router")
+        monkeypatch.setattr(router_module, "start_training_from_feedback", fake_start)
+
+        r = client.post("/api/v1/admin/training/start?epochs=1")
+        assert r.status_code == 200, r.text
+        assert captured["timeout_seconds"] == 999
 
 
 class TestAdminUI:

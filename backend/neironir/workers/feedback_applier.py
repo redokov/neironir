@@ -368,12 +368,12 @@ class FeedbackApplier:
     def _persist_counters(self, job_dir: Path, counters: dict[EntityType, int]) -> None:
         """Write the latest placeholder numbering for the next apply-feedback call."""
         path = job_dir / "counters.json"
-        path.write_text(
+        atomic_write(
+            path,
             json.dumps(
                 {entity_type.value: n for entity_type, n in counters.items()},
                 ensure_ascii=False,
             ),
-            encoding="utf-8",
         )
 
 

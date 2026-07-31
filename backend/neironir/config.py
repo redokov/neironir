@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -65,3 +66,45 @@ class Settings(BaseSettings):
     def frontend_path(self) -> Path:
         """Return the frontend directory as a :class:`Path`."""
         return Path(self.frontend_dir)
+
+
+def parse_opf_cmd(raw: str) -> list[str]:
+    """Tokenise the ``privacy_filter_cmd`` setting for subprocess exec.
+
+    The first whitespace-delimited token is the executable — its path
+    may contain backslashes that ``shlex.split`` would mangle on
+    Windows, so it is split off first.  The remaining arguments are
+    parsed with ``shlex`` (POSIX mode) to honour quoting; on unbalanced
+    quotes we fall back to a naive whitespace split.
+
+    A quoted executable (``\"C:\\Program Files\\opf\\opf.exe\" --flag``)
+    is unquoted and kept as a single token.
+    """
+    raw = raw.strip()
+    if not raw:
+        return ["opf"]
+
+    head: str
+    rest: str
+    if raw[0] in "\"'":
+        quote = raw[0]
+        end = raw.find(quote, 1)
+        if end > 0:
+            head = raw[1:end]
+            rest = raw[end + 1 :].strip()
+        else:
+            # Unbalanced quote right at the start — treat literally.
+            parts = raw.split(None, 1)
+            head = parts[0]
+            rest = parts[1] if len(parts) > 1 else ""
+    else:
+        parts = raw.split(None, 1)
+        head = parts[0]
+        rest = parts[1] if len(parts) > 1 else ""
+
+    if rest:
+        try:
+            return [head, *shlex.split(rest, posix=True)]
+        except ValueError:
+            return [head, *rest.split()]
+    return [head]

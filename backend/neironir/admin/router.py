@@ -40,10 +40,10 @@ from neironir.admin.training import (
     start_training_from_feedback,
     stop_training,
 )
-from neironir.api.dependencies import get_settings
+from neironir.api.dependencies import get_settings, update_privacy_timeout
 from neironir.api.schemas import ErrorResponse
 from neironir.auth.dependencies import require_admin_auth, verify_csrf
-from neironir.config import Settings
+from neironir.config import Settings, parse_opf_cmd
 from neironir.storage.local import atomic_write
 
 logger = logging.getLogger(__name__)
@@ -121,6 +121,17 @@ async def get_document_detail(
     feedback_path = job_dir / "feedback.json"
 
     text = text_path.read_text(encoding="utf-8") if text_path.is_file() else ""
+    try:
+        job_data = json.loads(job_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=ErrorResponse(
+                code="corrupt_job_metadata",
+                message=f"Job {job_id} metadata is unreadable.",
+            ).model_dump(),
+        ) from exc
+
     annotations: list[dict[str, object]] = []
     if annotations_path.is_file():
         try:
@@ -137,7 +148,7 @@ async def get_document_detail(
 
     return {
         "job_id": str(job_id),
-        "job": json.loads(job_path.read_text(encoding="utf-8")),
+        "job": job_data,
         "text": text,
         "annotations": annotations,
         "feedback": feedback,
@@ -168,6 +179,11 @@ async def start_training_endpoint(
     storage_dir = Path(settings.storage_dir)
     output_dir = storage_dir / "checkpoints" / _now_iso()
     opf_cmd = _opf_cmd(settings)
+    # Honour the runtime timeout override (admin settings) so the same
+    # knob controls both the annotation and the training subprocesses.
+    timeout_s = settings.privacy_filter_timeout
+    with suppress(FileNotFoundError, json.JSONDecodeError, KeyError, ValueError):
+        timeout_s = _load_runtime_timeout(storage_dir)
 
     try:
         state = await start_training_from_feedback(
@@ -175,7 +191,7 @@ async def start_training_endpoint(
             output_dir=output_dir,
             opf_cmd=opf_cmd,
             epochs=epochs,
-            timeout_seconds=settings.privacy_filter_timeout,
+            timeout_seconds=timeout_s,
         )
     except RuntimeError as exc:
         raise HTTPException(
@@ -294,9 +310,9 @@ async def update_runtime_settings(
                 ).model_dump(),
             )
         _save_runtime_timeout(Path(settings.storage_dir), timeout)
-        # Reflect the change in the process-wide dependency cache so new
-        # subprocess builds pick up the new value immediately.
-        settings._runtime_timeout_override = timeout  # type: ignore[attr-defined]
+        # Apply the new timeout to the live privacy client singleton so
+        # it takes effect immediately (no restart required).
+        update_privacy_timeout(float(timeout))
 
     return await get_runtime_settings(settings=settings)
 
@@ -328,29 +344,10 @@ def _save_runtime_timeout(storage_dir: Path, timeout: int) -> None:
 def _opf_cmd(settings: Settings) -> list[str]:
     """Build the ``opf`` command tokenised for subprocess exec.
 
-    Tries ``shlex.split`` first because that is the portable POSIX way
-    to honour quoting.  Falls back to a naive ``.split()`` if the
-    tokenizer misbehaves on a Windows path with backslashes (a known
-    ``shlex`` limitation).
+    Delegates to :func:`neironir.config.parse_opf_cmd` so the training
+    path and the annotation client share a single tokenizer.
     """
-    raw = settings.privacy_filter_cmd.strip()
-    if not raw:
-        return ["opf"]
-
-    # First word is the executable — the path may contain backslashes
-    # that ``shlex.split`` would mangle on Windows.  Split it off and
-    # parse the rest with ``shlex`` to honour any quoting.
-    import shlex
-
-    parts = raw.split(None, 1)
-    head = parts[0]
-    rest = parts[1] if len(parts) > 1 else ""
-    if rest:
-        try:
-            return [head] + shlex.split(rest, posix=True)
-        except ValueError:
-            return [head] + rest.split()
-    return [head]
+    return parse_opf_cmd(settings.privacy_filter_cmd)
 
 
 def _now_iso() -> str:

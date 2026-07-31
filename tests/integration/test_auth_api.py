@@ -129,6 +129,74 @@ class TestLogin:
         assert "neironir_csrf" in (set_cookie or "")
 
 
+class TestLoginNextRedirect:
+    """Open-redirect protection for the ``?next=`` parameter (issue 3.2)."""
+
+    def _login(self, client: TestClient) -> None:
+        r = client.post(
+            "/login",
+            data={"username": TEST_USER, "password": TEST_PASSWORD},
+            follow_redirects=False,
+        )
+        assert r.status_code in (302, 303)
+
+    def test_get_login_external_next_rejected(self, client: TestClient) -> None:
+        self._login(client)
+        r = client.get(
+            "/login",
+            params={"next": "https://evil.example"},
+            follow_redirects=False,
+        )
+        assert r.status_code == 302
+        assert r.headers["location"] == "/admin"
+
+    def test_get_login_protocol_relative_next_rejected(self, client: TestClient) -> None:
+        self._login(client)
+        r = client.get(
+            "/login",
+            params={"next": "//evil.example"},
+            follow_redirects=False,
+        )
+        assert r.headers["location"] == "/admin"
+
+    def test_get_login_backslash_next_rejected(self, client: TestClient) -> None:
+        self._login(client)
+        r = client.get(
+            "/login",
+            params={"next": "/\\evil.example"},
+            follow_redirects=False,
+        )
+        assert r.headers["location"] == "/admin"
+
+    def test_get_login_relative_next_allowed(self, client: TestClient) -> None:
+        self._login(client)
+        r = client.get(
+            "/login",
+            params={"next": "/admin"},
+            follow_redirects=False,
+        )
+        assert r.headers["location"] == "/admin"
+
+    def test_post_login_external_next_rejected(self, client: TestClient) -> None:
+        r = client.post(
+            "/login",
+            params={"next": "https://evil.example"},
+            data={"username": TEST_USER, "password": TEST_PASSWORD},
+            follow_redirects=False,
+        )
+        assert r.status_code == 303
+        assert r.headers["location"] == "/admin"
+
+    def test_post_login_relative_next_allowed(self, client: TestClient) -> None:
+        r = client.post(
+            "/login",
+            params={"next": "/admin"},
+            data={"username": TEST_USER, "password": TEST_PASSWORD},
+            follow_redirects=False,
+        )
+        assert r.headers["location"] == "/admin"
+
+
 class TestWhoami:
     def test_whoami_unauthenticated(self, client: TestClient) -> None:
         r = client.get("/api/v1/auth/whoami")

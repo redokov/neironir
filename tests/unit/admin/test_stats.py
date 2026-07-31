@@ -246,6 +246,67 @@ class TestComputeJobsWithFeedback:
         rows = compute_jobs_with_feedback(storage_dir, limit=2)
         assert len(rows) == 2
 
+    def test_sorted_most_recent_first(self, storage_dir: Path) -> None:
+        """Rows must be ordered by reviewer activity (finished_at), newest
+        first — directory names are random UUIDs and say nothing about
+        recency."""
+        base = datetime.now()
+        ids: dict[int, str] = {}
+        for days_ago in (5, 1, 3):
+            ts = base - timedelta(days=days_ago)
+            ids[days_ago] = _write_job(
+                storage_dir / "jobs",
+                status=JobStatus.COMPLETED,
+                created_at=ts,
+                finished_at=ts,
+                with_feedback=True,
+            )
+
+        rows = compute_jobs_with_feedback(storage_dir)
+        assert [r.job_id for r in rows] == [ids[1], ids[3], ids[5]]
+
+    def test_limit_returns_most_recent(self, storage_dir: Path) -> None:
+        """The limit must keep the *most recent* N jobs, not an arbitrary
+        subset in directory-iteration order."""
+        base = datetime.now()
+        ids: dict[int, str] = {}
+        for days_ago in range(5):
+            ts = base - timedelta(days=days_ago)
+            ids[days_ago] = _write_job(
+                storage_dir / "jobs",
+                status=JobStatus.COMPLETED,
+                created_at=ts,
+                finished_at=ts,
+                with_feedback=True,
+            )
+
+        rows = compute_jobs_with_feedback(storage_dir, limit=2)
+        assert [r.job_id for r in rows] == [ids[0], ids[1]]
+
+    def test_falls_back_to_created_at_when_unfinished(self, storage_dir: Path) -> None:
+        """Jobs without ``finished_at`` (e.g. still pending) are ordered
+        by ``created_at``."""
+        base = datetime.now()
+        old_finished = base - timedelta(days=1)
+        new_pending = base
+        finished_id = _write_job(
+            storage_dir / "jobs",
+            status=JobStatus.COMPLETED,
+            created_at=old_finished,
+            finished_at=old_finished,
+            with_feedback=True,
+        )
+        pending_id = _write_job(
+            storage_dir / "jobs",
+            status=JobStatus.PENDING,
+            created_at=new_pending,
+            finished_at=None,
+            with_feedback=True,
+        )
+
+        rows = compute_jobs_with_feedback(storage_dir)
+        assert [r.job_id for r in rows] == [pending_id, finished_id]
+
     def test_has_comment_flag(self, storage_dir: Path) -> None:
         now = datetime.now()
         real_id = str(uuid4())

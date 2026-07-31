@@ -225,7 +225,7 @@ class TestRuntimeSettings:
             privacy_filter_timeout=600,
         )
         client = _build_subprocess_client(settings)
-        assert client._timeout_s == 42.0, f"expected timeout 42.0, got {client._timeout_s}"
+        assert client.timeout_s == 42.0, f"expected timeout 42.0, got {client.timeout_s}"
 
     def test_runtime_timeout_saves_and_loads_roundtrip(self, tmp_path: Path) -> None:
         """Round-trip: save, load, verify."""

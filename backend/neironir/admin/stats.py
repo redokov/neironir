@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
@@ -168,7 +168,7 @@ def compute_jobs_with_feedback(
         return []
 
     results: list[JobFeedbackSummary] = []
-    for job_dir in sorted(jobs_dir.iterdir(), reverse=True):
+    for job_dir in jobs_dir.iterdir():
         if not job_dir.is_dir():
             continue
         feedback_path = job_dir / "feedback.json"
@@ -225,10 +225,12 @@ def compute_jobs_with_feedback(
             )
         )
 
-        if len(results) >= limit:
-            break
-
-    return results
+    # Sort by reviewer activity, most recent first: ``finished_at`` when
+    # the job completed, falling back to ``created_at``.  Directory names
+    # are random UUIDs, so iteration order says nothing about recency —
+    # the limit must be applied only *after* sorting.
+    results.sort(key=lambda r: r.finished_at or r.created_at, reverse=True)
+    return results[:limit]
 
 
 def _bucket_key(ts: datetime, period: Period) -> str:
@@ -244,16 +246,6 @@ def _bucket_key(ts: datetime, period: Period) -> str:
     if period == "month":
         return ts.strftime("%Y-%m")
     return ts.strftime("%Y-%m-%d")
-
-
-def _default_since(period: Period) -> datetime:
-    """Return a sensible default lower bound for the bucket histogram."""
-    now = datetime.now()
-    if period == "week":
-        return now - timedelta(weeks=12)
-    if period == "month":
-        return now - timedelta(days=365)
-    return now - timedelta(days=30)
 
 
 __all__ = [

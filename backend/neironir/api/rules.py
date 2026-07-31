@@ -35,6 +35,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from neironir.api.dependencies import get_settings
 from neironir.auth.dependencies import require_admin_auth, verify_csrf
 from neironir.config import Settings
+from neironir.domain.entity_type import EntityType
 from neironir.privacy.feedback_analyzer import FeedbackAnalyzer, ProposedRule
 from neironir.privacy.rules import RuleBasedDetector
 from neironir.storage.local import atomic_write
@@ -268,6 +269,15 @@ async def add_manual_rule(
         )
 
     try:
+        EntityType(entity_type)
+    except ValueError as exc:
+        allowed = ", ".join(t.value for t in EntityType)
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Unknown entity_type {entity_type!r}; expected one of: {allowed}",
+        ) from exc
+
+    try:
         re.compile(pattern)
     except re.error as exc:
         raise HTTPException(
@@ -286,6 +296,10 @@ async def add_manual_rule(
 
     storage_dir = _rules_dir(settings)
     rule_id = _save_rule_meta(storage_dir, proposal)
+
+    # Hot-reload the in-memory rule list so the cached detector picks
+    # up the rule immediately — same behaviour as ``approve_rule``.
+    RuleBasedDetector.load_dynamic_rules(settings.storage_dir)
 
     logger.info("manual rule added: %s — %s (%s)", rule_id, entity_type, pattern)
     return {

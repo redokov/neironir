@@ -22,7 +22,7 @@ from pathlib import Path
 
 from fastapi import Depends
 
-from neironir.config import Settings
+from neironir.config import Settings, parse_opf_cmd
 from neironir.privacy.client import (
     MockPrivacyFilterClient,
     PrivacyFilterClient,
@@ -150,7 +150,7 @@ def get_privacy(settings: Settings = Depends(get_settings)) -> PrivacyFilterClie
 
 def _build_subprocess_client(settings: Settings) -> SubprocessPrivacyFilterClient:
     """Construct a :class:`SubprocessPrivacyFilterClient` from settings."""
-    cmd = settings.privacy_filter_cmd.split()
+    cmd = parse_opf_cmd(settings.privacy_filter_cmd)
     checkpoint_dir = (
         Path(settings.privacy_filter_checkpoint_dir)
         if settings.privacy_filter_checkpoint_dir
@@ -175,4 +175,25 @@ def _build_subprocess_client(settings: Settings) -> SubprocessPrivacyFilterClien
     )
 
 
-__all__ = ["get_privacy", "get_settings", "get_storage"]
+def update_privacy_timeout(timeout_s: float) -> bool:
+    """Apply a new OPF subprocess timeout to the live privacy client.
+
+    The privacy client is a process-wide singleton built once at
+    startup, so writing ``runtime_settings.json`` alone would not take
+    effect until a restart.  This helper mutates the singleton in
+    place, unwrapping a :class:`CombinedPrivacyClient` when needed.
+
+    Returns:
+        True if a live :class:`SubprocessPrivacyFilterClient` was
+        updated; False when the singleton is a mock or not built yet.
+    """
+    client = _privacy_client
+    if isinstance(client, CombinedPrivacyClient):
+        client = client.model_client
+    if isinstance(client, SubprocessPrivacyFilterClient):
+        client.timeout_s = timeout_s
+        return True
+    return False
+
+
+__all__ = ["get_privacy", "get_settings", "get_storage", "update_privacy_timeout"]

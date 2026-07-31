@@ -59,6 +59,11 @@ class CombinedPrivacyClient:
         self._model_client = model_client
         self._rule_detector = rule_detector if rule_detector is not None else RuleBasedDetector()
 
+    @property
+    def model_client(self) -> PrivacyFilterClient:
+        """Return the wrapped neural-model client (exposed for runtime tuning)."""
+        return self._model_client
+
     async def annotate(self, text: str) -> list[EntitySpan]:
         """Return merged spans from the neural model and rule-based detector.
 

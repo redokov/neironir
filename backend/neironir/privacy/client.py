@@ -199,7 +199,9 @@ class SubprocessPrivacyFilterClient:
         self._opf_cmd = opf_cmd if opf_cmd is not None else ["opf"]
         self._checkpoint_dir = checkpoint_dir
         self._device = device
-        self._timeout_s = timeout_s
+        # Public and mutable on purpose: the admin settings endpoint
+        # retunes the live singleton via ``update_privacy_timeout``.
+        self.timeout_s = timeout_s
 
     async def annotate(self, text: str) -> list[EntitySpan]:
         """Invoke ``opf`` and return the detected spans."""
@@ -275,11 +277,11 @@ class SubprocessPrivacyFilterClient:
             stderr=asyncio.subprocess.PIPE,
         )
         try:
-            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=self._timeout_s)
+            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=self.timeout_s)
         except TimeoutError as exc:
             proc.kill()
             await proc.wait()
-            raise PrivacyFilterError(f"opf timeout after {self._timeout_s}s") from exc
+            raise PrivacyFilterError(f"opf timeout after {self.timeout_s}s") from exc
 
         if proc.returncode != 0:
             raise PrivacyFilterError(

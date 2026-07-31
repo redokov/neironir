@@ -130,6 +130,26 @@ def _origin_matches(request: Request) -> bool:
     return True
 
 
+def _safe_next_url(request: Request) -> str:
+    """Return the ``?next=`` redirect target if it is a safe local path.
+
+    Anything that could steer the browser off this host — absolute
+    URLs, protocol-relative ``//host`` URLs, backslash tricks — falls
+    back to ``/admin``.  Used by both ``GET`` and ``POST /login``.
+    """
+    next_url = request.query_params.get("next") or "/admin"
+    parsed = urlparse(next_url)
+    if (
+        parsed.scheme
+        or parsed.netloc
+        or not next_url.startswith("/")
+        or next_url.startswith("//")
+        or "\\" in next_url
+    ):
+        return "/admin"
+    return next_url
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -148,8 +168,7 @@ async def get_login(
     payload = get_session_payload(request, settings=settings)
     if payload and payload.get(SESSION_PAYLOAD_KEY):
         # Already authenticated — bounce to the post-login destination.
-        next_url = request.query_params.get("next") or "/admin"
-        return RedirectResponse(url=next_url, status_code=status.HTTP_302_FOUND)
+        return RedirectResponse(url=_safe_next_url(request), status_code=status.HTTP_302_FOUND)
 
     login_path = settings.frontend_path / "login.html"
     if login_path.is_file():
@@ -208,11 +227,7 @@ async def post_login(
     csrf_sid = new_csrf_session_id()
     csrf_token = generate_csrf_token(csrf_sid)
 
-    next_url = request.query_params.get("next") or "/admin"
-    # Only allow same-host redirects to keep open-redirect at bay.
-    parsed_next = urlparse(next_url)
-    if parsed_next.scheme or parsed_next.netloc:
-        next_url = "/admin"
+    next_url = _safe_next_url(request)
 
     response = RedirectResponse(url=next_url, status_code=status.HTTP_303_SEE_OTHER)
     _set_auth_cookies(
