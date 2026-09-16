@@ -490,7 +490,6 @@ class TestAdminTrainingEndpoints:
                 break
             time.sleep(0.1)
 
-
     def test_start_uses_runtime_timeout_override(
         self,
         client_and_storage: tuple[TestClient, Path, _SettingsHandle],

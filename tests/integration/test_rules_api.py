@@ -53,13 +53,11 @@ def client(tmp_path: Path) -> Generator[tuple[TestClient, Path], None, None]:
 
 
 class TestManualRules:
-    def test_add_manual_rule_success(
-        self, client: tuple[TestClient, Path]
-    ) -> None:
+    def test_add_manual_rule_success(self, client: tuple[TestClient, Path]) -> None:
         c, storage = client
         r = c.post(
             "/api/v1/rules",
-            params={
+            json={
                 "entity_type": "private_phone",
                 "pattern": r"ZZZ\d{8}",
                 "description": "synthetic test rule",
@@ -77,15 +75,13 @@ class TestManualRules:
         assert data["pattern"] == r"ZZZ\d{8}"
         assert data["status"] == "approved"
 
-    def test_add_manual_rule_hot_reloads_detector(
-        self, client: tuple[TestClient, Path]
-    ) -> None:
+    def test_add_manual_rule_hot_reloads_detector(self, client: tuple[TestClient, Path]) -> None:
         """A manually added rule must be active immediately, matching the
         behaviour of the approve endpoint."""
         c, _storage = client
         r = c.post(
             "/api/v1/rules",
-            params={"entity_type": "private_phone", "pattern": r"ZZZ\d{8}"},
+            json={"entity_type": "private_phone", "pattern": r"ZZZ\d{8}"},
         )
         assert r.status_code == 200, r.text
 
@@ -93,35 +89,29 @@ class TestManualRules:
             patterns = [p.pattern for _, p, _ in RuleBasedDetector._DYNAMIC_RULES]  # noqa: SLF001
         assert r"ZZZ\d{8}" in patterns
 
-    def test_add_manual_rule_invalid_entity_type(
-        self, client: tuple[TestClient, Path]
-    ) -> None:
+    def test_add_manual_rule_invalid_entity_type(self, client: tuple[TestClient, Path]) -> None:
         c, storage = client
         r = c.post(
             "/api/v1/rules",
-            params={"entity_type": "not_a_type", "pattern": r"\d{10}"},
+            json={"entity_type": "not_a_type", "pattern": r"\d{10}"},
         )
         assert r.status_code == 422
         # Nothing must be persisted for an invalid rule.
         rules_dir = storage / "rules"
         assert not rules_dir.is_dir() or list(rules_dir.glob("rule_*.json")) == []
 
-    def test_add_manual_rule_invalid_regex(
-        self, client: tuple[TestClient, Path]
-    ) -> None:
+    def test_add_manual_rule_invalid_regex(self, client: tuple[TestClient, Path]) -> None:
         c, _storage = client
         r = c.post(
             "/api/v1/rules",
-            params={"entity_type": "private_phone", "pattern": "([unclosed"},
+            json={"entity_type": "private_phone", "pattern": "([unclosed"},
         )
         assert r.status_code == 422
 
-    def test_add_manual_rule_pattern_too_short(
-        self, client: tuple[TestClient, Path]
-    ) -> None:
+    def test_add_manual_rule_pattern_too_short(self, client: tuple[TestClient, Path]) -> None:
         c, _storage = client
         r = c.post(
             "/api/v1/rules",
-            params={"entity_type": "private_phone", "pattern": "ab"},
+            json={"entity_type": "private_phone", "pattern": "ab"},
         )
         assert r.status_code == 422

@@ -221,6 +221,31 @@ class TestExtractDigitPattern:
         assert result is not None
         assert "\\d{" in result
 
+    def test_phone_pattern_with_leading_plus_matches(self) -> None:
+        """Regression for code-review N1.
+
+        Patterns starting with a non-word character (``+``) must not be
+        wrapped in a leading ``\b`` — that anchor is a no-op before a
+        non-word character and would make the approved rule silently
+        match nothing.
+        """
+        import re
+
+        result = _extract_digit_pattern("+7 495 123-45-67")
+        assert result is not None
+        assert not result.startswith("\\b"), "leading \\b before '+' makes the rule dead"
+        # A structurally identical number must be matched.
+        assert re.search(result, "+7 812 456-78-90") is not None
+
+    def test_inn_still_word_boundary_wrapped(self) -> None:
+        """Digit-first patterns keep their word boundaries."""
+        import re
+
+        result = _extract_digit_pattern("4810004427")
+        assert result is not None
+        assert result.startswith("\\b") and result.endswith("\\b")
+        assert re.search(result, "4810004427") is not None
+
     def test_short_number(self) -> None:
         """Numbers with fewer than MIN_DIGIT_LEN digits should be rejected."""
         result = _extract_digit_pattern("12345")

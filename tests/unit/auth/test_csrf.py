@@ -49,7 +49,7 @@ class TestGenerateAndVerify:
             verify_csrf_token(
                 header_token=signed,
                 cookie_token=signed,
-                header_csrf_sid=sid,
+                session_csrf_sid=sid,
                 secret=_TEST_SECRET,
             )
             is True
@@ -64,7 +64,7 @@ class TestGenerateAndVerify:
             verify_csrf_token(
                 header_token=signed_a,
                 cookie_token=signed_b,
-                header_csrf_sid=sid_a,
+                session_csrf_sid=sid_a,
                 secret=_TEST_SECRET,
             )
             is False
@@ -79,7 +79,7 @@ class TestGenerateAndVerify:
             verify_csrf_token(
                 header_token=signed_a,
                 cookie_token=signed_a,
-                header_csrf_sid=sid_b,  # wrong session!
+                session_csrf_sid=sid_b,  # wrong session!
                 secret=_TEST_SECRET,
             )
             is False
@@ -119,7 +119,7 @@ class TestGenerateAndVerify:
             verify_csrf_token(
                 header_token=signed,
                 cookie_token=signed,
-                header_csrf_sid=sid,
+                session_csrf_sid=sid,
                 secret="different-secret",
             )
             is False
@@ -138,7 +138,7 @@ class TestGenerateAndVerify:
             verify_csrf_token(
                 header_token=signed,
                 cookie_token=signed,
-                header_csrf_sid=sid,
+                session_csrf_sid=sid,
                 secret=_TEST_SECRET,
             )
             is True
@@ -147,7 +147,7 @@ class TestGenerateAndVerify:
             verify_csrf_token(
                 header_token=signed,
                 cookie_token=other,
-                header_csrf_sid=sid,
+                session_csrf_sid=sid,
                 secret=_TEST_SECRET,
             )
             is False

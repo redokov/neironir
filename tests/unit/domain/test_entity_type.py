@@ -5,8 +5,8 @@ from __future__ import annotations
 from neironir.domain.entity_type import TEMPLATE_FORMAT, EntityType
 
 
-def test_entity_type_has_exactly_eight_values() -> None:
-    assert len(EntityType) == 8
+def test_entity_type_has_exactly_nine_values() -> None:
+    assert len(EntityType) == 9
 
 
 def test_entity_type_string_values_match_architecture() -> None:
@@ -18,6 +18,7 @@ def test_entity_type_string_values_match_architecture() -> None:
     assert EntityType.PRIVATE_PHONE.value == "private_phone"
     assert EntityType.PRIVATE_DATE.value == "private_date"
     assert EntityType.PRIVATE_URL.value == "private_url"
+    assert EntityType.PRIVATE_ORGANIZATION.value == "private_organization"
     assert EntityType.ACCOUNT_NUMBER.value == "account_number"
     assert EntityType.SECRET.value == "secret"
 
@@ -30,7 +31,7 @@ def test_entity_type_is_str_enum() -> None:
 
 def test_template_format_covers_every_entity_type() -> None:
     assert set(TEMPLATE_FORMAT.keys()) == set(EntityType)
-    assert len(TEMPLATE_FORMAT) == 8
+    assert len(TEMPLATE_FORMAT) == 9
 
 
 def test_template_format_strings_match_architecture() -> None:
@@ -40,6 +41,7 @@ def test_template_format_strings_match_architecture() -> None:
     assert TEMPLATE_FORMAT[EntityType.PRIVATE_PHONE] == "<PRIVATE_PHONE{n}>"
     assert TEMPLATE_FORMAT[EntityType.PRIVATE_DATE] == "<PRIVATE_DATE{n}>"
     assert TEMPLATE_FORMAT[EntityType.PRIVATE_URL] == "<PRIVATE_URL{n}>"
+    assert TEMPLATE_FORMAT[EntityType.PRIVATE_ORGANIZATION] == "<PRIVATE_ORGANIZATION{n}>"
     # Note: the non-PRIVATE_* types do not carry a PRIVATE_ prefix.
     assert TEMPLATE_FORMAT[EntityType.ACCOUNT_NUMBER] == "<ACCOUNT_NUMBER{n}>"
     assert TEMPLATE_FORMAT[EntityType.SECRET] == "<SECRET{n}>"

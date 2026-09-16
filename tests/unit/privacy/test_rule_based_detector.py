@@ -161,6 +161,8 @@ class TestOrganisationDictionary:
         detector.add_organisation("ООО Ромашка")
         spans = detector.detect("ООО Ромашка")
         assert len(spans) > 0
+        # Organisations are typed as PRIVATE_ORGANIZATION, not PRIVATE_PERSON.
+        assert all(s.entity_type == EntityType.PRIVATE_ORGANIZATION for s in spans)
 
     def test_add_organisation_dedup(self, detector: RuleBasedDetector) -> None:
         detector.add_organisation("ООО Ромашка")
@@ -170,7 +172,16 @@ class TestOrganisationDictionary:
     def test_no_match_on_unknown_org(self, detector: RuleBasedDetector) -> None:
         spans = detector.detect("ООО Неизвестная")
         # Without an explicit add, no org span should appear.
-        assert all(s.entity_type != EntityType.PRIVATE_PERSON for s in spans)
+        assert all(
+            s.entity_type not in (EntityType.PRIVATE_PERSON, EntityType.PRIVATE_ORGANIZATION)
+            for s in spans
+        )
+
+    def test_quoted_org_is_private_organization(self, detector: RuleBasedDetector) -> None:
+        """Built-in quoted-org rules type matches as PRIVATE_ORGANIZATION."""
+        spans = detector.detect("ООО «Моторинвест», ИНН 7743776572")
+        org_spans = [s for s in spans if s.entity_type == EntityType.PRIVATE_ORGANIZATION]
+        assert len(org_spans) >= 1
 
 
 class TestEdgeCases:
