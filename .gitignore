@@ -40,3 +40,4 @@ build/
 
 # Privacy-filter model checkpoint (downloaded by opf on first run).
 .opf/
+nul

@@ -44,7 +44,7 @@ from pathlib import Path
 from typing import ClassVar
 
 from neironir.domain.entity_type import EntityType
-from neironir.privacy.client import EntitySpan
+from neironir.privacy.client import EMAIL_PATTERN, PHONE_PATTERN, EntitySpan, overlaps
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +90,7 @@ class RuleBasedDetector:
         #   6. Person names / Organisation names / Addresses / Dates
 
         # -- 1. EMAIL --------------------------------------------------------
-        patterns.append((EntityType.PRIVATE_EMAIL, re.compile(_EMAIL_PATTERN), "email"))
+        patterns.append((EntityType.PRIVATE_EMAIL, re.compile(EMAIL_PATTERN), "email"))
 
         # -- 2. TAX IDENTIFIERS (BEFORE PHONE! numeric IDs match phone too) --
         patterns.append((EntityType.ACCOUNT_NUMBER, re.compile(_INN_KPP_PATTERN), "inn_kpp"))
@@ -107,7 +107,7 @@ class RuleBasedDetector:
         patterns.append((EntityType.ACCOUNT_NUMBER, re.compile(_BIK_PATTERN), "bik"))
 
         # -- 4. PHONE (generic; catches any remaining digit runs) -------------
-        patterns.append((EntityType.PRIVATE_PHONE, re.compile(_PHONE_PATTERN), "phone"))
+        patterns.append((EntityType.PRIVATE_PHONE, re.compile(PHONE_PATTERN), "phone"))
 
         # -- 5. CONTRACT / DOCUMENT NUMBERS ----------------------------------
         patterns.append(
@@ -127,10 +127,14 @@ class RuleBasedDetector:
 
         # -- 7. ORGANISATION NAMES -------------------------------------------
         patterns.append(
-            (EntityType.PRIVATE_PERSON, re.compile(_ORG_WITH_QUOTES_PATTERN), "org_quoted")
+            (EntityType.PRIVATE_ORGANIZATION, re.compile(_ORG_WITH_QUOTES_PATTERN), "org_quoted")
         )
         patterns.append(
-            (EntityType.PRIVATE_PERSON, re.compile(_ORG_WITH_BRACKETS_PATTERN), "org_bracketed")
+            (
+                EntityType.PRIVATE_ORGANIZATION,
+                re.compile(_ORG_WITH_BRACKETS_PATTERN),
+                "org_bracketed",
+            )
         )
 
         # -- 8. RUSSIAN ADDRESSES --------------------------------------------
@@ -174,7 +178,12 @@ class RuleBasedDetector:
                 if pos == -1:
                     break
                 spans.append(
-                    EntitySpan(start=pos, end=pos + len(org), entity_type=EntityType.PRIVATE_PERSON)
+                    EntitySpan(
+                        start=pos,
+                        end=pos + len(org),
+                        entity_type=EntityType.PRIVATE_ORGANIZATION,
+                        source="rule",
+                    )
                 )
                 start = pos + 1
         return spans
@@ -264,6 +273,7 @@ class RuleBasedDetector:
                         start=match.start(),
                         end=match.end(),
                         entity_type=entity_type,
+                        source="rule",
                     )
                 )
 
@@ -277,11 +287,9 @@ class RuleBasedDetector:
 # Regex patterns (module-level for testability)
 # ---------------------------------------------------------------------------
 
-# Email — standard pattern
-_EMAIL_PATTERN = r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"
-
-# Phone — Russian and international (copied from mock client)
-_PHONE_PATTERN = r"(?<!\d)(?!\d{16,})\+?\d[\d\s\-()]{7,}\d(?!\d)"
+# Email and phone patterns live in :mod:`neironir.privacy.client` and are
+# imported as ``EMAIL_PATTERN`` / ``PHONE_PATTERN`` so the mock client and
+# the rule detector share a single definition.
 
 # Bank account with explicit prefix: р/с, Р/с, p/c (latin), P/C
 _BANK_ACCOUNT_PATTERN = r"[РрPp][/\\][СсCc]\s*[:/]?\s*(\d{20})"
@@ -309,12 +317,6 @@ _INN_KPP_PATTERN = (
 
 # OGRN: 13 digits / OGRNIP: 15 digits
 _OGRN_PATTERN = r"ОГРН(?:ИП)?\s*[:/]?\s*(\d{13,15})"
-
-# Fallback: standalone 10-15 digit number that looks like a Russian tax ID
-# but *isn't* obviously an account number (which is 16-20 digits).
-# This is intentionally conservative — only match numbers that are
-# clearly separated from surrounding text.
-_FALLBACK_RU_ID_PATTERN = r"(?<!\d)\d{10}(?:\d{2,5})?(?!\d)"
 
 # Person name: "Иванов И.И."  (surname + space + initial.initial)
 _SURNAME_INITIALS_PATTERN = (
@@ -408,16 +410,11 @@ def _deduplicate_rules(
     ordered = sorted(spans, key=lambda s: (_priority_rules(s.entity_type, rules), s.start))
     kept: list[EntitySpan] = []
     for span in ordered:
-        if any(_overlaps_rules(span, kept_span) for kept_span in kept):
+        if any(overlaps(span, kept_span) for kept_span in kept):
             continue
         kept.append(span)
     kept.sort(key=lambda s: (s.start, _priority_rules(s.entity_type, rules)))
     return kept
-
-
-def _overlaps_rules(a: EntitySpan, b: EntitySpan) -> bool:
-    """Return True if spans ``a`` and ``b`` share at least one character."""
-    return not (a.end <= b.start or b.end <= a.start)
 
 
 __all__ = [

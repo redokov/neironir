@@ -26,6 +26,10 @@ class EntityType(str, Enum):  # noqa: UP042
     PRIVATE_PHONE = "private_phone"
     PRIVATE_DATE = "private_date"
     PRIVATE_URL = "private_url"
+    # Legal entities / organisations (ООО «…», АО «…» …). Kept separate
+    # from PRIVATE_PERSON so the redacted output is semantically honest
+    # and feedback statistics don't mix people with companies.
+    PRIVATE_ORGANIZATION = "private_organization"
     ACCOUNT_NUMBER = "account_number"
     SECRET = "secret"
 
@@ -37,6 +41,7 @@ TEMPLATE_FORMAT: dict[EntityType, str] = {
     EntityType.PRIVATE_PHONE: "<PRIVATE_PHONE{n}>",
     EntityType.PRIVATE_DATE: "<PRIVATE_DATE{n}>",
     EntityType.PRIVATE_URL: "<PRIVATE_URL{n}>",
+    EntityType.PRIVATE_ORGANIZATION: "<PRIVATE_ORGANIZATION{n}>",
     EntityType.ACCOUNT_NUMBER: "<ACCOUNT_NUMBER{n}>",
     EntityType.SECRET: "<SECRET{n}>",
 }

@@ -28,6 +28,7 @@ Known limitations (inherited from the MVP)
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from docx import Document
@@ -37,6 +38,8 @@ from docx.table import Table
 from docx.text.paragraph import Paragraph
 
 from neironir.converters.base import Replacement
+
+logger = logging.getLogger(__name__)
 
 # Separator inserted between every pair of body-element texts (paragraphs
 # and table cells alike). The privacy-filter sees one continuous string
@@ -226,10 +229,6 @@ def _slice_elements(
     one cell and ends in the next — the span is applied only to the
     cell where it starts, and a warning is logged for the dropped tail.
     """
-    import logging
-
-    logger = logging.getLogger(__name__)
-
     rewritten = list(texts)
     ordered = sorted(replacements, key=lambda r: r.start, reverse=True)
     clipped_count = 0
@@ -377,7 +376,6 @@ def _set_cell_text(table: Table, cell_idx: int | None, new_text: str) -> None:
                         first_para.text = new_text
                 return
             count += 1
-    logger = __import__("logging").getLogger(__name__)
     logger.warning("table cell index %s not found (table has %d cells)", cell_idx, count)
 
 

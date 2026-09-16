@@ -127,6 +127,10 @@ _STATE_LOCK = asyncio.Lock()
 # ``apply-feedback`` calls could interleave and corrupt the dataset.
 _DATASET_APPEND_LOCK = threading.Lock()
 
+# Maximum number of trailing ``opf train`` log lines retained in
+# :attr:`TrainingState.log_tail` for the admin UI.
+LOG_TAIL_MAX: int = 50
+
 
 def get_training_state() -> TrainingState:
     """Return the process-wide :class:`TrainingState` instance."""
@@ -425,10 +429,8 @@ async def _monitor(proc: asyncio.subprocess.Process, timeout_seconds: int = 1080
     If the subprocess runs longer than ``timeout_seconds`` it is
     terminated with SIGTERM and the status is set to ``FAILED``.
     """
-    log_tail: list[str] = [""]
-    log_tail.clear()
-    stderr_lines: list[str] = [""]
-    stderr_lines.clear()
+    log_tail: list[str] = []
+    stderr_lines: list[str] = []
 
     async def _read_stdout() -> None:
         assert proc.stdout is not None
@@ -440,7 +442,7 @@ async def _monitor(proc: asyncio.subprocess.Process, timeout_seconds: int = 1080
             if not text:
                 continue
             log_tail.append(text)
-            if len(log_tail) > 50:
+            if len(log_tail) > LOG_TAIL_MAX:
                 log_tail.pop(0)
             _STATE.log_tail = list(log_tail)
 
@@ -665,7 +667,7 @@ async def start_training_from_feedback(
 
 # Maximum tail size retained in state — the admin UI shows only the
 # last few lines so we cap memory growth.
-LOG_TAIL_MAX: int = 50
+# (Defined near the top of the module as ``LOG_TAIL_MAX``.)
 
 
 # Path of the cumulative training dataset that

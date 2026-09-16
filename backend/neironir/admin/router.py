@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import logging
 from contextlib import suppress
-from datetime import UTC
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
@@ -77,9 +77,9 @@ async def get_stats(
         period: Bucket granularity — ``day`` (default), ``week`` or ``month``.
         days: Window length in days for the per-period buckets.
     """
-    from datetime import datetime, timedelta
+    from datetime import UTC, datetime, timedelta
 
-    since = datetime.now() - timedelta(days=days)
+    since = datetime.now(UTC) - timedelta(days=days)
     stats = compute_documents_stats(
         Path(settings.storage_dir),
         period=period,
@@ -357,8 +357,6 @@ def _now_iso() -> str:
     get unique directory names, avoiding race conditions on the
     ``combined_dataset.jsonl`` file.
     """
-    from datetime import datetime
-
     return datetime.now(UTC).strftime("%Y%m%dT%H%M%S_%fZ")
 
 

@@ -29,6 +29,7 @@ Implements variant C of the auth flow:
 from __future__ import annotations
 
 import logging
+import secrets
 from typing import Annotated
 from urllib.parse import urlparse
 
@@ -217,7 +218,11 @@ async def post_login(
             detail={"code": "csrf_origin_check_failed", "message": "Origin mismatch"},
         )
 
-    if username != settings.admin_user or password != settings.admin_password:
+    # Constant-time comparison for both fields — avoids leaking which of
+    # the two credentials was wrong via a timing side channel.
+    user_ok = secrets.compare_digest(username, settings.admin_user)
+    pass_ok = secrets.compare_digest(password, settings.admin_password)
+    if not (user_ok and pass_ok):
         # Use a generic message — never disclose which field was wrong.
         return RedirectResponse(
             url="/login?error=invalid",

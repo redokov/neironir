@@ -152,8 +152,31 @@ def _extract_digit_pattern(text: str) -> str | None:
             pos += 1
 
     pattern = "".join(tokens)
-    # Wrap in word boundaries for safety
-    return f"\\b{pattern}\\b"
+    # Word boundaries only make sense at a word/non-word transition. A
+    # leading ``\b`` before a non-word character (``+``, ``(``, ``«``) is
+    # a no-op and silently makes the generated rule match nothing, so we
+    # only emit the anchor where the source text actually starts/ends on
+    # a word character. See code-review N1.
+    return _wrap_word_boundaries(pattern, text)
+
+
+def _is_word_char(ch: str) -> bool:
+    """Return True for characters that count as ``\\w`` in a regex."""
+    return bool(ch) and (ch.isalnum() or ch == "_")
+
+
+def _wrap_word_boundaries(pattern: str, source_text: str) -> str:
+    """Wrap ``pattern`` in ``\\b`` only where ``source_text`` has word chars.
+
+    A ``\b`` anchor matches a transition between a ``\\w`` and a ``\\W``
+    character. Placing it before a non-word character (``+``, ``(``, ``«``)
+    is meaningless and makes the rule silently match nothing. We therefore
+    only emit the leading/trailing ``\b`` when the corresponding end of the
+    original text is a word character.
+    """
+    leading = r"\b" if _is_word_char(source_text[:1]) else ""
+    trailing = r"\b" if _is_word_char(source_text[-1:]) else ""
+    return f"{leading}{pattern}{trailing}"
 
 
 def _extract_name_pattern(text: str) -> str | None:
@@ -207,7 +230,7 @@ def _extract_generic_regex(text: str, entity_type: str) -> str | None:
     # 2. Replace literal groups of 3+ digits with quantifiers.
     escaped = re.sub(r"\d{3,}", lambda m: f"\\d{{{len(m.group())}}}", escaped)
 
-    return f"\\b{escaped}\\b"
+    return _wrap_word_boundaries(escaped, text)
 
 
 # ---------------------------------------------------------------------------

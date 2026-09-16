@@ -81,19 +81,19 @@ def verify_csrf_token(
     *,
     header_token: str | None,
     cookie_token: str | None,
-    header_csrf_sid: str | None = None,
+    session_csrf_sid: str | None = None,
     secret: str = "",
 ) -> bool:
     """Compare the JS-supplied header against the cookie value.
 
     Both sides must carry the same signed ``session_id:token`` value,
     and the session id inside the signed payload must match the one
-    from the session cookie (``header_csrf_sid``).
+    from the session cookie (``session_csrf_sid``).
 
     Args:
         header_token: Value of the ``X-CSRF-Token`` header (signed).
         cookie_token: Value of the CSRF cookie (signed).
-        header_csrf_sid: Session id extracted from the session cookie.
+        session_csrf_sid: Session id extracted from the session cookie.
             Pass ``None`` to skip session binding (legacy / test mode).
         secret: The secret used to sign the CSRF value.
 
@@ -124,7 +124,7 @@ def verify_csrf_token(
 
     # Session binding: if a csrf_sid was provided from the session
     # cookie, it must match the sid embedded in the CSRF token.
-    return header_csrf_sid is None or sid_from_header == header_csrf_sid
+    return session_csrf_sid is None or sid_from_header == session_csrf_sid
 
 
 def _unsign(signed_value: str, secret: str) -> tuple[str, str] | None:

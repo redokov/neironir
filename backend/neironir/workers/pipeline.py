@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
@@ -129,13 +129,13 @@ async def run_job(
             target_converter.build(source_path, target_path, replacements)
 
         job.status = JobStatus.COMPLETED
-        job.finished_at = datetime.now()
+        job.finished_at = datetime.now(UTC)
         job.error = None
         storage.save_job(job)
     except Exception as exc:  # noqa: BLE001 — we want to swallow every failure here
         logger.exception("job %s failed", job_id)
         job.status = JobStatus.FAILED
-        job.finished_at = datetime.now()
+        job.finished_at = datetime.now(UTC)
         job.error = str(exc)
         storage.save_job(job)
 
@@ -165,27 +165,13 @@ def _save_annotations(
             "end": span.end,
             "entity_type": span.entity_type.value,
             "text": text[span.start : span.end],
-            "source": _detect_source(span, text),
+            "source": span.source,
         }
         for span in spans
     ]
     path = storage.job_dir(job_id) / "annotations.json"
     atomic_write(path, json.dumps(annotations, ensure_ascii=False))
     logger.debug("saved annotations.json for job %s (%d spans)", job_id, len(spans))
-
-
-def _detect_source(span: EntitySpan, text: str) -> str:
-    """Heuristic to determine whether a span came from the model or rules.
-
-    This is a best-effort heuristic for the MVP. In production the
-    ``CombinedPrivacyClient`` should tag spans with their origin.
-    """
-    # ACCOUNT_NUMBER spans that include a non-digit prefix (like "ИНН ")
-    # are almost certainly from the rule detector.
-    entity_text = text[span.start : span.end]
-    if span.entity_type.value == "account_number" and not entity_text.strip().isdigit():
-        return "rule"
-    return "model"
 
 
 def _converter_for(ext: str) -> DocumentConverter:

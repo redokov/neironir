@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import logging
 
-from neironir.privacy.client import EntitySpan, PrivacyFilterClient
+from neironir.privacy.client import EntitySpan, PrivacyFilterClient, overlaps
 from neironir.privacy.rules import RuleBasedDetector
 
 logger = logging.getLogger(__name__)
@@ -69,19 +69,23 @@ class CombinedPrivacyClient:
 
         Merge strategy (priority order):
 
-        1. Rule spans that **include a context prefix** (e.g. ``ИНН``, ``ОГРН``,
-           ``БИК``, ``р/с``) win over model spans of **different** type. This
-           corrects the case where the model classifies ``4810004427`` as
-           ``PRIVATE_PHONE`` but rules correctly type it as ``ACCOUNT_NUMBER``
-           because the surrounding ``ИНН 4810004427`` provides context.
+        1. Rule spans of a **different** entity type that are **at least as
+           long** as an overlapping model span override that model span. In
+           practice this catches cases where the rules add surrounding
+           context (``ИНН 4810004427`` → ``ACCOUNT_NUMBER``) that the model
+           mistyped (e.g. as ``PRIVATE_PHONE``). The heuristic keys on
+           *length*, not on an explicit prefix check — a longer rule span of
+           a different type is treated as more informative.
 
-        2. Model spans that have **no overlapping rule span** are kept.
+        2. Model spans that have **no qualifying overriding rule span** are
+           kept unchanged.
 
-        3. Non-prefix rule spans are only appended if they do **not** overlap
+        3. Remaining rule spans are appended only if they do **not** overlap
            with any kept span.
 
         Returns:
-            A deduplicated, sorted list of :class:`EntitySpan`.
+            A deduplicated, sorted list of :class:`EntitySpan`. Each span
+            carries its origin in ``source`` (``"model"`` / ``"rule"``).
         """
         model_spans = await self._model_client.annotate(text)
         rule_spans = self._rule_detector.detect(text)
@@ -101,7 +105,7 @@ class CombinedPrivacyClient:
         for rule_span in rule_spans:
             for idx, model_span in enumerate(model_spans):
                 if (
-                    _overlaps(rule_span, model_span)
+                    overlaps(rule_span, model_span)
                     and rule_span.entity_type != model_span.entity_type
                     and rule_span.end - rule_span.start >= model_span.end - model_span.start
                 ):
@@ -116,16 +120,11 @@ class CombinedPrivacyClient:
             merged.append(model_span)
 
         for rule_span in rule_spans:
-            if not any(_overlaps(rule_span, m) for m in merged):
+            if not any(overlaps(rule_span, m) for m in merged):
                 merged.append(rule_span)
 
         merged.sort(key=lambda s: (s.start, _entity_type_order(s.entity_type)))
         return merged
-
-
-def _overlaps(a: EntitySpan, b: EntitySpan) -> bool:
-    """Return True if spans ``a`` and ``b`` share at least one character."""
-    return not (a.end <= b.start or b.end <= a.start)
 
 
 def _entity_type_order(entity_type: object) -> int:
@@ -140,8 +139,9 @@ def _entity_type_order(entity_type: object) -> int:
         "private_phone": 3,
         "private_date": 4,
         "private_url": 5,
-        "account_number": 6,
-        "secret": 7,
+        "private_organization": 6,
+        "account_number": 7,
+        "secret": 8,
     }
     return order.get(str(entity_type), 99)
 

@@ -15,7 +15,7 @@ built from a ``Job`` instance via ``model_validate(job)`` with
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any, Literal
 from uuid import UUID, uuid4
@@ -52,7 +52,7 @@ class Job(BaseModel):
     # but a user can ask the server to convert a ``.docx`` to ``.md`` via
     # the ``output_format`` flag on the upload endpoint.
     output_ext: Literal["md", "docx"] | None = None
-    created_at: datetime = Field(default_factory=datetime.now)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     finished_at: datetime | None = None
     error: str | None = None
     # Human-readable note about processing details (e.g. fallback from

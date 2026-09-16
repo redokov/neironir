@@ -33,6 +33,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from neironir.api.dependencies import get_settings
+from neironir.api.schemas import ManualRuleIn
 from neironir.auth.dependencies import require_admin_auth, verify_csrf
 from neironir.config import Settings
 from neironir.domain.entity_type import EntityType
@@ -247,9 +248,7 @@ async def reject_rule(
 
 @router.post("")
 async def add_manual_rule(
-    entity_type: str,
-    pattern: str,
-    description: str = "",
+    payload: ManualRuleIn,
     settings: Settings = Depends(get_settings),
 ) -> dict[str, object]:
     """Manually add a custom regex rule.
@@ -257,11 +256,14 @@ async def add_manual_rule(
     The rule is immediately saved with status ``approved`` so it will
     be picked up on the next warm-reload.
 
-    Args:
+    Body:
         entity_type: One of the ``EntityType`` values (e.g. ``private_person``).
         pattern: A valid Python regex pattern string.
         description: Optional human-readable description.
     """
+    entity_type = payload.entity_type
+    pattern = payload.pattern
+    description = payload.description
     if not pattern or len(pattern) < 3:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
@@ -31,6 +31,19 @@ logger = logging.getLogger(__name__)
 # Time-bucket granularity used by the ``/stats`` endpoint when the UI
 # asks for a breakdown over time.
 Period = Literal["day", "week", "month"]
+
+
+def _to_aware_utc(dt: datetime) -> datetime:
+    """Return ``dt`` as an offset-aware UTC datetime.
+
+    Job metadata written before the timezone unification stores naive
+    datetimes (``datetime.now()``). Comparing them with the now-aware
+    ``since``/``until`` bounds would raise ``TypeError``, so we assume
+    naive timestamps were recorded in UTC and stamp them accordingly.
+    """
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
 
 
 @dataclass(frozen=True)
@@ -96,6 +109,14 @@ def compute_documents_stats(
     if not jobs_dir.is_dir():
         return DocumentsStats()
 
+    # Normalise the window bounds too — callers may pass naive datetimes
+    # (legacy callers / tests) that must compare cleanly with the
+    # now-aware job timestamps.
+    if since is not None:
+        since = _to_aware_utc(since)
+    if until is not None:
+        until = _to_aware_utc(until)
+
     total = 0
     completed = 0
     failed = 0
@@ -115,10 +136,12 @@ def compute_documents_stats(
             continue
 
         # Apply the time-window filter before counting so the totals
-        # agree with the bucket counts.
-        if since is not None and job.created_at < since:
+        # agree with the bucket counts. Normalise to aware UTC first —
+        # older job.json files store naive timestamps.
+        created_aware = _to_aware_utc(job.created_at)
+        if since is not None and created_aware < since:
             continue
-        if until is not None and job.created_at >= until:
+        if until is not None and created_aware >= until:
             continue
 
         total += 1
@@ -130,7 +153,7 @@ def compute_documents_stats(
         if (job_dir / "feedback.json").is_file():
             with_feedback += 1
 
-        bucket_key = _bucket_key(job.created_at, period)
+        bucket_key = _bucket_key(created_aware, period)
         by_day[bucket_key] = by_day.get(bucket_key, 0) + 1
 
     return DocumentsStats(
@@ -228,8 +251,12 @@ def compute_jobs_with_feedback(
     # Sort by reviewer activity, most recent first: ``finished_at`` when
     # the job completed, falling back to ``created_at``.  Directory names
     # are random UUIDs, so iteration order says nothing about recency —
-    # the limit must be applied only *after* sorting.
-    results.sort(key=lambda r: r.finished_at or r.created_at, reverse=True)
+    # the limit must be applied only *after* sorting. Timestamps are
+    # normalised to aware UTC so naive legacy records compare cleanly.
+    results.sort(
+        key=lambda r: _to_aware_utc(r.finished_at or r.created_at),
+        reverse=True,
+    )
     return results[:limit]
 
 

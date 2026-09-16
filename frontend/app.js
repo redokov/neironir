@@ -14,6 +14,7 @@
     private_phone: "Телефон",
     private_date: "Дата",
     private_url: "URL",
+    private_organization: "Организация",
     account_number: "Счёт/ИНН",
     secret: "Секрет",
   };
@@ -557,6 +558,7 @@
       ["private_email", "Email"],
       ["private_phone", "Телефон"],
       ["private_date", "Дата"],
+      ["private_organization", "Организация"],
       ["account_number", "Счёт/ИНН"],
       ["secret", "Секрет"],
     ];
@@ -928,12 +930,6 @@
   // ------------------------------------------------------------------
   //  Utilities
   // ------------------------------------------------------------------
-
-  function escapeHtml(str) {
-    var div = document.createElement("div");
-    div.appendChild(document.createTextNode(str));
-    return div.innerHTML;
-  }
 
   // Init
   if (document.readyState === "loading") {

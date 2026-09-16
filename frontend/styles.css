@@ -248,6 +248,12 @@ h1 {
   color: #9d174d;
 }
 
+.entity-span.type-private_organization,
+.tag-org {
+  background: #c7d2fe;
+  color: #3730a3;
+}
+
 /* ADD highlight (user-added, confirmed) */
 .entity-span.added {
   box-shadow: 0 0 0 2px #2563eb;

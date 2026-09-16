@@ -66,6 +66,7 @@
     private_phone: "Телефон",
     private_date: "Дата",
     private_url: "URL",
+    private_organization: "Организация",
     account_number: "Счёт/ИНН",
     secret: "Секрет",
   };
@@ -523,6 +524,8 @@
         return "date";
       case "private_url":
         return "url";
+      case "private_organization":
+        return "org";
       case "account_number":
         return "account";
       case "secret":

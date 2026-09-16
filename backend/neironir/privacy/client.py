@@ -44,11 +44,18 @@ class EntitySpan:
     :meth:`PrivacyFilterClient.annotate`. The ``entity_type`` is mapped
     from the model's ``label`` (snake_case) to our closed :class:`EntityType`
     enum.
+
+    ``source`` records which detector produced the span — ``"model"`` for
+    the neural privacy-filter, ``"rule"`` for the rule-based detector,
+    ``"user"`` for spans added via the review UI. It flows straight into
+    ``annotations.json`` so the frontend and the training loop can tell
+    signal origins apart without guessing from the text.
     """
 
     start: int
     end: int
     entity_type: EntityType
+    source: str = "model"
 
 
 class PrivacyFilterClient(Protocol):
@@ -67,7 +74,11 @@ class PrivacyFilterClient(Protocol):
 # Patterns derived from the spec (docs/agents/03-backend.md §3.1). They
 # are deliberately conservative; the goal is to provide a usable signal
 # for tests and UI development, not to match the real model.
-_EMAIL_PATTERN = r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"
+#
+# These two are the canonical definitions shared with
+# :mod:`neironir.privacy.rules` so the mock client and the rule detector
+# stay in sync.
+EMAIL_PATTERN = r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"
 # Two pieces of defensive logic here:
 # 1. ``(?<!\d)`` / ``(?!\d)`` keep the phone regex from matching a
 #    short snippet inside a larger digit run (e.g. a 16-digit card).
@@ -75,7 +86,7 @@ _EMAIL_PATTERN = r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"
 #    ``account_number`` per the spec (``\b\d{16,20}\b``). Without this
 #    guard a phone match would greedily capture a 16-20 digit card
 #    number and win by priority order, hiding the entity type.
-_PHONE_PATTERN = r"(?<!\d)(?!\d{16,})\+?\d[\d\s\-()]{7,}\d(?!\d)"
+PHONE_PATTERN = r"(?<!\d)(?!\d{16,})\+?\d[\d\s\-()]{7,}\d(?!\d)"
 _URL_PATTERN = r"https?://\S+"
 _DATE_PATTERN = r"\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b"
 _ACCOUNT_PATTERN = r"\b\d{16,20}\b"
@@ -87,8 +98,8 @@ _SECRET_PATTERN = r"(?i)(?:password|passwd|pwd)\s*[:=]\s*\S+"
 # ``PRIVATE_ADDRESS`` are intentionally omitted — the mock never
 # produces them.
 _RULES: list[tuple[EntityType, str]] = [
-    (EntityType.PRIVATE_EMAIL, _EMAIL_PATTERN),
-    (EntityType.PRIVATE_PHONE, _PHONE_PATTERN),
+    (EntityType.PRIVATE_EMAIL, EMAIL_PATTERN),
+    (EntityType.PRIVATE_PHONE, PHONE_PATTERN),
     (EntityType.PRIVATE_URL, _URL_PATTERN),
     (EntityType.PRIVATE_DATE, _DATE_PATTERN),
     (EntityType.ACCOUNT_NUMBER, _ACCOUNT_PATTERN),
@@ -156,16 +167,25 @@ def _deduplicate(spans: list[EntitySpan]) -> list[EntitySpan]:
     ordered = sorted(spans, key=lambda s: (_priority(s.entity_type), s.start))
     kept: list[EntitySpan] = []
     for span in ordered:
-        if any(_overlaps(span, kept_span) for kept_span in kept):
+        if any(overlaps(span, kept_span) for kept_span in kept):
             continue
         kept.append(span)
     kept.sort(key=lambda s: (s.start, _priority(s.entity_type)))
     return kept
 
 
-def _overlaps(a: EntitySpan, b: EntitySpan) -> bool:
-    """Return True if ``a`` and ``b`` cover at least one shared character."""
+def overlaps(a: EntitySpan, b: EntitySpan) -> bool:
+    """Return True if ``a`` and ``b`` cover at least one shared character.
+
+    Canonical overlap check shared by the mock client, the rule-based
+    detector and the combined client. Import this instead of re-defining
+    a private copy.
+    """
     return not (a.end <= b.start or b.end <= a.start)
+
+
+# Backwards-compatible alias — older code/tests may still call ``_overlaps``.
+_overlaps = overlaps
 
 
 # ---------------------------------------------------------------------------
@@ -361,9 +381,12 @@ def _find_json_end(text: str) -> int:
 
 
 __all__ = [
+    "EMAIL_PATTERN",
     "EntitySpan",
     "MockPrivacyFilterClient",
+    "PHONE_PATTERN",
     "PrivacyFilterClient",
     "PrivacyFilterError",
     "SubprocessPrivacyFilterClient",
+    "overlaps",
 ]

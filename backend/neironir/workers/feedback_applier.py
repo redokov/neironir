@@ -324,37 +324,19 @@ class FeedbackApplier:
         # earlier offsets remain valid as the string mutates.
         all_replacements = reject_replacements + add_replacements
         if all_replacements:
-            if output_ext == "md":
-                text = cleaned_text
-                # Right-to-left application on the cleaned text.
-                ordered = sorted(all_replacements, key=lambda r: r.start, reverse=True)
-                for replacement in ordered:
-                    text = (
-                        text[: replacement.start]
-                        + replacement.placeholder
-                        + text[replacement.end :]
-                    )
-                atomic_write(result_path, text)  # atomic write prevents partial files on crash
-            else:
-                # DOCX output: rebuild from the original source with
-                # the initial pipeline replacements + user corrections
-                # concatenated.  ``DocxConverter.build`` accepts
-                # replacements in any order and re-sorts internally.
-                source_path = job_dir / "source.docx"
-                initial = [
-                    Replacement(
-                        start=int(str(ann["start"])),
-                        end=int(str(ann["end"])),
-                        entity_type=EntityType(str(ann["entity_type"])),
-                        placeholder=_initial_placeholder(
-                            annotations, alignments, cleaned_text, idx
-                        ),
-                    )
-                    for idx, ann in enumerate(annotations)
-                    if ann.get("entity_type")
-                    and EntityType(str(ann["entity_type"])) in EntityType.__members__.values()
-                ]
-                converter.build(source_path, result_path, initial + all_replacements)
+            # Only Markdown output is reachable here — the API endpoint
+            # rejects DOCX output with HTTP 400 (``docx_output_not_supported``)
+            # before this method is ever called. Keeping a single code path
+            # avoids the previous dead DOCX branch and its fragile
+            # ``EntityType(...) in __members__.values()`` guard that could
+            # raise ``ValueError`` before the ``in`` check ran.
+            assert output_ext == "md", "apply-feedback requires Markdown output"  # noqa: S101
+            text = cleaned_text
+            # Right-to-left application on the cleaned text.
+            ordered = sorted(all_replacements, key=lambda r: r.start, reverse=True)
+            for replacement in ordered:
+                text = text[: replacement.start] + replacement.placeholder + text[replacement.end :]
+            atomic_write(result_path, text)  # atomic write prevents partial files on crash
 
         self._persist_counters(job_dir, counters)
 
@@ -375,23 +357,6 @@ class FeedbackApplier:
                 ensure_ascii=False,
             ),
         )
-
-
-def _initial_placeholder(
-    annotations: list[dict[str, object]],
-    alignments: list[SpanAlignment],
-    cleaned_text: str,
-    annotation_idx: int,
-) -> str:
-    """Return the placeholder string the pipeline wrote for an annotation."""
-    if annotation_idx >= len(annotations):
-        return ""
-    ann = annotations[annotation_idx]
-    key = (int(str(ann["start"])), int(str(ann["end"])))
-    for al in alignments:
-        if (al.orig_start, al.orig_end) == key:
-            return cleaned_text[al.cleaned_start : al.cleaned_end]
-    return ""
 
 
 __all__ = ["ApplySummary", "FeedbackApplier", "SpanAlignment"]
