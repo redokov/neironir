@@ -1,71 +1,81 @@
-# SDD Handoff Brief: neironir — adopt-фаза Phase 2 (F09–F11)
+# SDD Handoff Brief: Programmatic (M2M) API
 
-> Status: Reviewed
-> Readiness: F09–F11 реверс-задокументированы и проверены; релиз — после стабилизации pre-existing failures
-> Updated: 2025-01-15
+> Status: Done
+> Readiness: Ready for release
+> Updated: 2026-09-16
 
 ## Metadata
 
-- **Specs:**
-  - `001-apply-feedback-to-result` — `.ai/sdd/specs/001-apply-feedback-to-result/` (review:done)
-  - `002-docx-to-md-conversion` — `.ai/sdd/specs/002-docx-to-md-conversion/` (review:done)
-  - `003-admin-ui` — `.ai/sdd/specs/003-admin-ui/` (review:done)
-  - `004-stabilize-phase2` — `.ai/sdd/specs/004-stabilize-phase2/` (review:done)
-- **Current .status:** review:done (все три)
-- **Source Inputs:** `.ai/sdd/ideas/001..003`; `.ai/sdd/PLAN.md` (OD-001…OD-004 приняты)
+- **Spec ID:** `005-programmatic-api`
+- **Spec Path:** `.ai/sdd/specs/005-programmatic-api/`
+- **Current .status:** `review:done`
+- **Source Inputs:**
+  - `.ai/sdd/ideas/004-programmatic-api.md`
+  - `.ai/steering/principles.md` (P-001/P-003/P-008/P-009/P-010/P-014)
 
 ## Product / Feature Summary
 
-- **User / Audience:** автор документа (F09–F10), администратор системы (F11).
-- **Problem:** preview сбрасывался после apply (F09); docx-структура терялась (F10); отсутствовал UI для статистики/дообучения/правил (F11).
-- **Outcome:** одна кнопка apply с локальным re-render preview; собственный docx→md конвертер (без pandoc); полный admin-UI с auth+CSRF.
-- **Scope:** F09–F11 (post-MVP), adopt-реверс + 1 багфикс (F09).
-- **Out of Scope:** новые фичи (Phase 3 отменена OD-003).
+- **User / Audience:** внешние системы (скрипты, интеграции, CI), оператор сервиса
+- **Problem:** пайплайн анонимизации был доступен только через браузерный UI (session/CSRF)
+- **Outcome:** программный доступ: `Bearer <ключ>` → upload → poll → download (binary или JSON/base64)
+- **Scope:** статические Bearer-ключи (`NEIRONIR_API_KEYS`), guard на `/api/v1/documents*`, контент-неготиация на `/download`, e2e на реальной модели
+- **Out of Scope:** OAuth/ротация ключей, per-key права, rate limiting, M2M-доступ к admin/rules, новые форматы
 
 ## Requirements Summary
 
-- **F09 (001):** US-001/US-002; FR-001…FR-005; NFR-001/002.
-- **F10 (002):** US-001/US-002; FR-001…FR-006; NFR-001…003.
-- **F11 (003):** US-001…US-005; FR-001…FR-008; NFR-001…004.
+- **Key User Stories:** US-001 (полный M2M-флоу), US-002 (JSON-результат), US-003 (отказ 401), US-004 (неизменность UI)
+- **Must Have Functional Requirements:** FR-001…FR-007 — все covered
+- **Important NFRs:** NFR-001 (безопасность: ключи не логируются, compare_digest), NFR-002 (совместимость), NFR-003 (coverage ≥ 70%), NFR-004 (пустые ключи = M2M off) — все covered
+- **Acceptance Notes:** Bearer-приоритет над cookie (TD-002); pass-through без Authorization-заголовка (TD-007, риск R-1 — задокументирован); feedback-эндпоинты вне M2M-контракта (TD-006)
 
 ## Design Summary
 
-- **F09:** локальная модификация `reviewData` после apply (TD-001); удаление лишних кнопок; `nextPlaceholderForType` + batch-счётчик.
-- **F10:** `converters/docx_to_md.py` (python-docx, headings/bold/italic/pipe-tables, hyperlink-collapse); `extracted.md` промежуточный.
-- **F11:** `admin/router.py` + `stats.py` + `training.py`; `api/rules.py`; session auth (itsdangerous) + CSRF; vanilla JS SPA.
-- **Technical Decisions:** D-001…D-004 в каждом спеке; `decisions.md` в 001.
-- **Risks / Constraints:** pre-existing failures тестов (9) — вне скоупа фич; mypy pre-existing (19).
+- **Approach:** одна FastAPI-dependency `require_documents_auth` на router `jobs.py`; без middleware
+- **Components / Modules:** `auth/api_key.py` (parse/validate/get_bearer_token), `auth/dependencies.py`, `api/jobs.py` (`_wants_json`, `_content_disposition`), `api/schemas.py` (`DownloadResultResponse`), `config.py` (`api_keys`)
+- **Data / State:** без изменений; ключи только в env, не персистятся
+- **APIs / Integrations:** `POST /api/v1/documents/` → 202; `GET /{job_id}` → JobResponse; `GET /{job_id}/download` → binary | JSON по `Accept: application/json`
+- **Technical Decisions:** TD-001 (единый 401), TD-002 (Bearer-приоритет), TD-003 (неготиация на download), TD-004 (без CSRF для Bearer), TD-005 (запятая-список), TD-006 (router-dependency), TD-007 (pass-through)
+- **Risks / Constraints:** R-1 (эндпоинты открыты без заголовка — hardening как будущая фича), R-2 (base64 +33%), R-3 (утерянный ключ), R-4 (timing — compare_digest), R-5 (обратная совместимость download — закрыта регресс-тестами)
 
 ## Implementation Plan
 
-- **F09:** реализован + багфикс Issue 1 (batch adds) — tasks T1–T7 done.
-- **F10:** реализован — tasks T1–T6 (реверс-проверка) done.
-- **F11:** реализован — tasks T1–T9 (реверс-проверка) done.
+- **Task Source:** `.ai/sdd/specs/005-programmatic-api/tasks.md` (T01–T13)
+- **Recommended Order:** выполнено: T01–T03 (заглушки) → T04–T07 (тесты, red) → T08–T11 (реализация) → T13 (верификация) → T12 (докс)
+- **Key Tasks:** все T01–T13 выполнены (см. review.md, Task Completion Check)
+- **Likely Files / Areas:** перечислены в review.md, Review Scope
 
 ## Verification Plan
 
 ```text
-F09: ruff frontend+tests (0); pytest tests/unit/frontend (10 passed); node -c OK; manual E2E mock — PASS
-F10: pytest tests/unit/converters/test_docx_to_md.py + test_output_format_and_apply_feedback.py (44 passed, 2 skipped)
-     pytest tests/e2e/test_output_format_apply_feedback.py (2 passed)
-F11: pytest tests/unit/admin tests/unit/auth (58 passed); integration admin_api+auth_api (23 passed, 2 pre-existing fail)
+Command: uv run pytest -m "not real_model" --cov=backend/neironir
+Expected: 446 passed, 21 skipped, coverage ≥ 70% — PASS (TOTAL 87%)
+
+Command: uv run pytest tests/integration/test_m2m_real_model.py -m real_model
+  (env NEIRONIR_RUN_REAL_MODEL_TESTS=1, NEIRONIR_PRIVACY_FILTER_CMD=<абс. путь к opf.exe>)
+Expected: PASS (факт: PASSED, 67 c, ф2.docx, PII-проверки)
+
+Command: uv run ruff check . && uv run ruff format --check . && uv run mypy backend/neironir
+Expected: 0 / 0 / 0 — PASS (факт)
 ```
+
+- **Required Evidence:** все прогонные артефакты зафиксированы в `review.md` (Verification)
+- **Acceptance Coverage:** FR-001…FR-007, NFR-001…004, US-001…004 — covered (см. review.md, Coverage Check)
 
 ## Review / Release Notes
 
-- **Review Artifacts:** по одному `review.md` на фичу — все `Approved with follow-ups`.
-- **Review Verdict:** Approved with follow-ups (все три).
+- **Review Artifact:** `.ai/sdd/specs/005-programmatic-api/review.md`
+- **Review Verdict:** Approved with follow-ups
 - **Known Follow-ups:**
-  1. ~~9 pre-existing failures тестов~~ — **Closed 2025-01-15** (004).
-  2. ~~19 pre-existing mypy-ошибок~~ — **Closed 2025-01-15** (004).
-  3. ~~`make test-real`~~ — **Passed 2025-01-15**: 6/6 real_model (OPF на машине).
-  4. ~~19 playwright-e2e~~ — **Passed 2025-01-15**: playwright+chromium установлены, 19/19.
-  5. 2 docx_to_md скипа — осознанные (зависят от русских Word-стилей в шаблоне).
+  - F-1 (Low): `any()`-early-exit в `is_valid_api_key` расходится с design §3.1/docstring — security-эффекта нет; выровнять при следующем касании
+  - F-4 (Info): ручное построение Content-Disposition (`_content_disposition`, QA-фикс для кириллических имён) — занести в design при ревизии
+  - F-3 (housekeeping): исполнителю заполнить чекбоксы/Execution Log в tasks.md
+  - Вне спеки: hardening documents-эндпоинтов (R-1); окружение real-model (абсолютный путь к opf.exe)
+  - Исправлено в ходе ревью: F-2 — docs/api.md дополнен описанием non-ASCII Content-Disposition fallback
 
 ## Handoff Readiness
 
-- **Ready for Implementation:** yes (всё реализовано)
-- **Ready for QA:** yes — pytest 376 passed / 0 failed, coverage 83%, e2e 19 passed
-- **Ready for Release:** yes (mock+real) — real_model 6/6 passed, playwright e2e 19/19 passed, ruff/mypy/format 0
-- **Blockers:** none.
-- **Recommended Next Action:** зафиксировать pre-release чек в CI (или релизный тег). Phase 2 стабилизирована полностью.
+- **Ready for Implementation:** yes (завершено)
+- **Ready for QA:** yes (real-model e2e пройден)
+- **Ready for Release:** yes (CHANGELOG 0.2.0 готов; блокеров нет)
+- **Blockers:** N/A
+- **Recommended Next Action:** merge/release 0.2.0; след. фича по PLAN.md

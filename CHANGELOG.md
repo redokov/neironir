@@ -5,6 +5,22 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 версионирование — [Semantic Versioning](https://semver.org/lang/ru/).
 
+## [0.2.0] — 2026-09-16
+
+### Добавлено
+
+- **Programmatic (M2M) API (спек 005).** Доступ к пайплайну анонимизации без
+  веб-интерфейса: статические Bearer-ключи из `NEIRONIR_API_KEYS` (через
+  запятую; пустое значение — M2M отключён, интерфейс работает как раньше),
+  те же эндпоинты `/api/v1/documents`: загрузка → опрос статуса → скачивание.
+  Скачивание по умолчанию отдаёт бинарный файл; при `Accept: application/json` —
+  JSON `DownloadResultResponse` с base64-контентом того же файла.
+  Запросы с заголовком `Authorization` всегда проходят проверку ключа
+  (отказ — `401` `invalid_api_key` + `WWW-Authenticate: Bearer`, session-cookie
+  не подменяет ключ); без заголовка — прежнее pass-through-поведение.
+  Ключи сравниваются в constant-time и не логируются. См. [docs/api.md](./docs/api.md),
+  раздел «Machine-to-machine API».
+
 ## [0.1.0] — 2025-07-16
 
 Первый тегированный релиз: стабилизация после Фазы 2 по результатам

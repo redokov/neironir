@@ -15,10 +15,12 @@ shape stays consistent across handlers.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 from pathlib import Path, PurePath
 from typing import Literal
+from urllib.parse import quote
 from uuid import UUID, uuid4
 
 from fastapi import (
@@ -28,6 +30,7 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Request,
     UploadFile,
     status,
 )
@@ -39,12 +42,14 @@ from neironir.api.schemas import (
     AnnotationSpan,
     AnnotationsResponse,
     ApplyFeedbackResponse,
+    DownloadResultResponse,
     ErrorResponse,
     FeedbackResponse,
     FeedbackSubmit,
     JobResponse,
     ModeInfoResponse,
 )
+from neironir.auth.dependencies import require_documents_auth
 from neironir.config import Settings
 from neironir.domain.job import Job, JobStatus
 from neironir.privacy.client import PrivacyFilterClient
@@ -55,7 +60,11 @@ from neironir.workers.pipeline import run_job
 logger = logging.getLogger(__name__)
 
 
-router = APIRouter(prefix="/api/v1/documents", tags=["documents"])
+router = APIRouter(
+    prefix="/api/v1/documents",
+    tags=["documents"],
+    dependencies=[Depends(require_documents_auth)],
+)
 
 
 # A separate router for endpoints that live under ``/api/v1`` but
@@ -88,6 +97,7 @@ _FULL_DETECTED_TYPES = (
     "private_phone",
     "private_url",
     "private_date",
+    "private_organization",
     "account_number",
     "secret",
 )
@@ -210,16 +220,36 @@ async def get_job(
 
 @router.get(
     "/{job_id}/download",
+    response_model=None,
     responses={
+        200: {
+            "description": (
+                "Cleaned file as a binary download, or as JSON with base64 "
+                "content when the client sends 'Accept: application/json'."
+            ),
+            "content": {
+                "application/octet-stream": {},
+                "application/json": {"model": DownloadResultResponse},
+            },
+        },
         404: {"model": ErrorResponse, "description": "Job not found"},
         409: {"model": ErrorResponse, "description": "Job is not yet completed"},
     },
 )
 async def download(
     job_id: UUID,
+    request: Request,
     storage: LocalStorage = Depends(get_storage),
-) -> FileResponse:
-    """Return the cleaned file for a completed job."""
+) -> FileResponse | DownloadResultResponse:
+    """Return the cleaned file for a completed job.
+
+    Content negotiation (Q3/TD-003): an Accept header containing an
+    exact ``application/json`` media-range (``q``-parameters and other
+    entries are ignored) yields a :class:`DownloadResultResponse` JSON
+    body with base64-encoded content. Any other Accept — including
+    ``*/*`` or no header at all — returns the binary file exactly as
+    before (FR-005, backward compatibility).
+    """
     job = _load_job_or_404(storage, job_id)
     if job.status != JobStatus.COMPLETED:
         raise _http_error(
@@ -235,11 +265,25 @@ async def download(
     result_path = storage.job_dir(job_id) / f"result.{output_ext}"
     download_name = _download_filename(job.source_filename, output_ext)
     media_type = _media_type_for(output_ext)
-    return FileResponse(
-        result_path,
-        media_type=media_type,
-        filename=download_name,
-    )
+
+    if _wants_json(request.headers.get("accept", "")):
+        content = result_path.read_bytes()
+        return DownloadResultResponse(
+            job_id=job_id,
+            filename=download_name,
+            ext=output_ext,
+            media_type=media_type,
+            size=len(content),
+            content_base64=base64.b64encode(content).decode("ascii"),
+        )
+
+    # Content-Disposition is built by hand (instead of FileResponse's
+    # ``filename=``) so non-ASCII names also carry a plain ASCII
+    # ``filename="..."`` fallback next to the RFC 5987 ``filename*``
+    # parameter (RFC 6266 §4.3); some M2M clients only read the plain one.
+    response = FileResponse(result_path, media_type=media_type)
+    response.headers["content-disposition"] = _content_disposition(download_name)
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -493,6 +537,27 @@ def _download_filename(source_filename: str, ext: str) -> str:
     return f"{stem}.cleaned.{ext}"
 
 
+def _content_disposition(download_name: str) -> str:
+    """Build the ``Content-Disposition`` value for ``download_name``.
+
+    ASCII names keep the plain ``attachment; filename="..."`` form.
+    Non-ASCII names get a sanitized ASCII fallback in ``filename="..."``
+    (non-ASCII characters and quote characters become ``_``) plus the
+    URL-encoded original name in ``filename*=utf-8''...`` (RFC 5987),
+    as recommended by RFC 6266 §4.3.
+    """
+
+    def _ascii_fallback(name: str) -> str:
+        return "".join(ch if ch.isascii() and ch not in '\\"' else "_" for ch in name)
+
+    if download_name.isascii():
+        return f'attachment; filename="{_ascii_fallback(download_name)}"'
+    return (
+        f'attachment; filename="{_ascii_fallback(download_name)}"; '
+        f"filename*=utf-8''{quote(download_name)}"
+    )
+
+
 def _media_type_for(ext: str) -> str:
     """Return the HTTP media type to use for a downloaded file extension."""
     if ext == "md":
@@ -503,6 +568,22 @@ def _media_type_for(ext: str) -> str:
         # the shorter alias so we send both via a single header.
         return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     return "application/octet-stream"
+
+
+def _wants_json(accept: str) -> bool:
+    """True iff any media-range in the Accept header is exactly 'application/json'.
+
+    Only the media-range part of each comma-separated entry is checked
+    (``q``-parameters and other params are ignored) with a lower-cased
+    exact match, so ``application/json; q=0.9`` or
+    ``application/json, */*`` match, while ``application/jsonx`` or a
+    bare ``*/*`` do not (TD-003).
+    """
+    return any(
+        entry.split(";", 1)[0].strip().lower() == "application/json"
+        for entry in accept.split(",")
+        if entry.strip()
+    )
 
 
 def _validate_output_format(

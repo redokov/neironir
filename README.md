@@ -31,6 +31,15 @@
 - Markdown (`.md`) — полная поддержка.
 - Microsoft Word (`.docx`) — поддержка параграфов; форматирование, таблицы, списки, изображения игнорируются (см. [docs/architecture.md](./docs/architecture.md#ограничения-mvp)).
 
+## Machine-to-machine доступ
+
+Помимо веб-интерфейса, пайплайн доступен программно: статические Bearer-ключи
+(`NEIRONIR_API_KEYS`), те же эндпоинты `/api/v1/documents` (upload → poll →
+download), выдача — бинарный файл или JSON с base64-контентом. Запросы без
+заголовка `Authorization` работают как раньше (режим веб-интерфейса).
+
+Подробнее — в [docs/api.md](./docs/api.md), раздел «Machine-to-machine API».
+
 ## Структура
 
 ```

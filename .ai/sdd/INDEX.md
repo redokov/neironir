@@ -25,6 +25,7 @@
 | 001 | Обратная связь (feedback) в очищенный файл            | idea:captured   | `.ai/sdd/ideas/001-apply-feedback-to-result.md`    |
 | 002 | Конвертация .docx → .md (Pandoc с fallback)           | idea:captured   | `.ai/sdd/ideas/002-docx-to-md-conversion.md`      |
 | 003 | Admin UI (счётчики, feedback, дообучение)             | idea:captured   | `.ai/sdd/ideas/003-admin-ui.md`                   |
+| 004 | Programmatic (M2M) API                                  | idea:captured   | `.ai/sdd/ideas/004-programmatic-api.md`           |
 
 ## Feature Workspace
 
@@ -32,7 +33,7 @@
 
 | Field              | Value | Notes                                                   |
 |--------------------|-------|---------------------------------------------------------|
-| Next Feature ID    | 001   | Вычислять из ФС перед созданием нового спека           |
+| Next Feature ID    | 006   | Вычислять из ФС перед созданием нового спека           |
 | Numbering Issues   | none  | —                                                       |
 
 ## Specs
@@ -45,12 +46,13 @@
 | 002 | .docx → .md conversion (FR-2)                 | review:done          | `.ai/sdd/specs/002-docx-to-md-conversion/requirements.md` | `.ai/sdd/specs/002-docx-to-md-conversion/design.md` | `.ai/sdd/specs/002-docx-to-md-conversion/tasks.md` | `.ai/sdd/specs/002-docx-to-md-conversion/review.md` |
 | 003 | Admin UI: counters, feedback, training (FR-3) | review:done          | `.ai/sdd/specs/003-admin-ui/requirements.md` | `.ai/sdd/specs/003-admin-ui/design.md` | `.ai/sdd/specs/003-admin-ui/tasks.md` | `.ai/sdd/specs/003-admin-ui/review.md` |
 | 004 | Stabilize Phase 2 (mypy + tests)             | review:done          | `.ai/sdd/specs/004-stabilize-phase2/requirements.md` | `.ai/sdd/specs/004-stabilize-phase2/design.md` | `.ai/sdd/specs/004-stabilize-phase2/tasks.md` | `.ai/sdd/specs/004-stabilize-phase2/review.md` |
+| 005 | Programmatic (M2M) API                       | review:done          | `.ai/sdd/specs/005-programmatic-api/requirements.md` | `.ai/sdd/specs/005-programmatic-api/design.md` | `.ai/sdd/specs/005-programmatic-api/tasks.md` | `.ai/sdd/specs/005-programmatic-api/review.md` |
 
 > Примечание: статусы выше — **план для adopt-фазы**. Реальные `.status`-файлы появятся после того, как пользователь одобрит генерацию реверс-документации. См. `.ai/sdd/PLAN.md`, секция «Adopt-фаза».
 
 ## Handoff
 
-- `.ai/sdd/handoff/sdd-brief.md`: **missing** — генерируется после одобрения tasks или завершения review для конкретной фичи.
+- `.ai/sdd/handoff/sdd-brief.md`: **active** — обзорное состояние после review спеки 005 (Programmatic (M2M) API, Approved with follow-ups).
 
 ## Next Actions
 

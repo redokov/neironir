@@ -5,6 +5,7 @@ from __future__ import annotations
 import shutil
 from collections.abc import Generator
 from pathlib import Path
+from urllib.parse import quote
 from uuid import uuid4
 
 import pytest
@@ -184,6 +185,31 @@ def test_download_completed_docx_returns_file(
     response = client.get(f"/api/v1/documents/{job.id}/download")
     assert response.status_code == 200
     assert 'filename="multi.dotted.name.cleaned.docx"' in response.headers["content-disposition"]
+
+
+def test_download_non_ascii_filename_has_ascii_fallback(
+    client_and_storage: tuple[TestClient, LocalStorage],
+) -> None:
+    """Non-ASCII names get both an ASCII fallback and an RFC 5987 parameter."""
+    client, storage = client_and_storage
+    job = Job(
+        source_filename="ф2.docx",
+        source_ext="docx",
+        status=JobStatus.COMPLETED,
+    )
+    storage.save_job(job)
+    storage.save_result(job.id, "docx", b"PK\x03\x04 stub")
+
+    response = client.get(f"/api/v1/documents/{job.id}/download")
+    assert response.status_code == 200
+
+    disposition = response.headers["content-disposition"]
+    # Plain ASCII fallback parameter (RFC 6266 §4.3): no Cyrillic, no quotes.
+    assert 'filename="_2.cleaned.docx"' in disposition
+    # RFC 5987 parameter carries the URL-encoded original name.
+    assert f"filename*=utf-8''{quote('ф2.cleaned.docx')}" in disposition
+    # The part before filename* must be pure ASCII.
+    assert disposition.split("filename*=utf-8''")[0].isascii()
 
 
 def test_root_returns_placeholder_html(

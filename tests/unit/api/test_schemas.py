@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import base64
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
-from neironir.api.schemas import ErrorResponse, HealthResponse, JobResponse
+from neironir.api.schemas import (
+    DownloadResultResponse,
+    ErrorResponse,
+    HealthResponse,
+    JobResponse,
+)
 from neironir.domain.job import Job, JobStatus
 from pydantic import ValidationError
 
@@ -90,3 +96,90 @@ def test_job_response_serialises_uuid_and_datetime_in_json() -> None:
     payload = response.model_dump(mode="json")
     assert payload["id"] == "f47ac10b-58cc-4372-a567-0e02b2c3d479"
     assert isinstance(payload["created_at"], str)
+
+
+# ---------------------------------------------------------------------------
+# DownloadResultResponse (F15: JSON download negotiation)
+# ---------------------------------------------------------------------------
+
+
+def _download_payload(**overrides: object) -> dict[str, object]:
+    """A minimal valid field set for ``DownloadResultResponse``."""
+    payload: dict[str, object] = {
+        "job_id": uuid4(),
+        "filename": "Договор.cleaned.md",
+        "ext": "md",
+        "media_type": "text/markdown; charset=utf-8",
+        "size": 12,
+        "content_base64": base64.b64encode(b"cleaned text").decode("ascii"),
+    }
+    payload.update(overrides)
+    return payload
+
+
+class TestDownloadResultResponse:
+    def test_accepts_all_fields(self) -> None:
+        fixed_id = uuid4()
+        response = DownloadResultResponse(**_download_payload(job_id=fixed_id))
+
+        assert response.job_id == fixed_id
+        assert response.filename == "Договор.cleaned.md"
+        assert response.ext == "md"
+        assert response.media_type == "text/markdown; charset=utf-8"
+        assert response.size == 12
+        assert response.content_base64 == base64.b64encode(b"cleaned text").decode("ascii")
+
+    @pytest.mark.parametrize("ext", ["md", "docx"])
+    def test_ext_accepts_both_documented_formats(self, ext: str) -> None:
+        response = DownloadResultResponse(**_download_payload(ext=ext))
+        assert response.ext == ext
+
+    def test_ext_rejects_undocumented_value(self) -> None:
+        with pytest.raises(ValidationError):
+            DownloadResultResponse(**_download_payload(ext="txt"))  # type: ignore[arg-type]
+
+    def test_job_id_must_be_uuid(self) -> None:
+        with pytest.raises(ValidationError):
+            DownloadResultResponse(**_download_payload(job_id="not-a-uuid"))  # type: ignore[arg-type]
+
+    def test_content_base64_is_ascii_string(self) -> None:
+        response = DownloadResultResponse(**_download_payload())
+        assert isinstance(response.content_base64, str)
+        assert response.content_base64.isascii()
+
+    def test_base64_round_trip(self) -> None:
+        original = "Текст с кириллицей и <PRIVATE_PERSON1> плейсхолдером".encode()
+        encoded = base64.b64encode(original).decode("ascii")
+        response = DownloadResultResponse(
+            **_download_payload(
+                content_base64=encoded,
+                size=len(original),
+            )
+        )
+        assert base64.b64decode(response.content_base64) == original
+        assert response.size == len(original)
+
+    def test_model_dump_json_round_trip(self) -> None:
+        """The JSON wire format must survive a validate→dump→validate cycle."""
+        response = DownloadResultResponse(**_download_payload())
+        payload = response.model_dump(mode="json")
+
+        assert set(payload) == {
+            "job_id",
+            "filename",
+            "ext",
+            "media_type",
+            "size",
+            "content_base64",
+        }
+        # UUID serialises to its canonical string form in JSON mode.
+        assert payload["job_id"] == str(response.job_id)
+
+        restored = DownloadResultResponse.model_validate(payload)
+        assert restored == response
+
+    def test_missing_field_is_rejected(self) -> None:
+        payload = _download_payload()
+        del payload["size"]  # type: ignore[arg-type]
+        with pytest.raises(ValidationError):
+            DownloadResultResponse(**payload)  # type: ignore[arg-type]

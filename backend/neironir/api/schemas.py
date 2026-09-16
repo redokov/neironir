@@ -129,9 +129,33 @@ class ModeInfoResponse(BaseModel):
     detected_types: list[str]
 
 
+class DownloadResultResponse(BaseModel):
+    """JSON representation of a cleaned file (GET /download with Accept: application/json)."""
+
+    job_id: UUID
+    filename: str
+    ext: Literal["md", "docx"]
+    media_type: str
+    size: int
+    content_base64: str
+
+
+class ManualRuleIn(BaseModel):
+    """Body payload for ``POST /api/v1/rules`` (manually added rule).
+
+    Using a JSON body instead of query params keeps long regex patterns
+    out of the request URL and the access log.
+    """
+
+    entity_type: str
+    pattern: str
+    description: str = ""
+
+
 __all__ = [
     "JobResponse",
     "HealthResponse",
+    "DownloadResultResponse",
     "ErrorResponse",
     "AnnotationSpan",
     "AnnotationsResponse",
@@ -139,5 +163,6 @@ __all__ = [
     "FeedbackSubmit",
     "FeedbackResponse",
     "ApplyFeedbackResponse",
+    "ManualRuleIn",
     "ModeInfoResponse",
 ]

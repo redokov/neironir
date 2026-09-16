@@ -62,6 +62,16 @@ class Settings(BaseSettings):
     # CSRF header name expected from JS clients.
     csrf_header_name: str = "X-CSRF-Token"
 
+    # --- Machine-to-machine API keys (static, comma-separated) ---
+    api_keys: str = ""  # env: NEIRONIR_API_KEYS
+
+    @property
+    def api_key_set(self) -> frozenset[str]:
+        """Parsed, stripped, non-empty keys from the comma-separated string."""
+        from neironir.auth.api_key import parse_api_keys
+
+        return parse_api_keys(self.api_keys)
+
     @property
     def frontend_path(self) -> Path:
         """Return the frontend directory as a :class:`Path`."""

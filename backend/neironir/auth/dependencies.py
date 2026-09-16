@@ -23,6 +23,7 @@ from typing import Annotated, Any
 from fastapi import Depends, HTTPException, Request, status
 
 from neironir.api.dependencies import get_settings  # re-used
+from neironir.auth.api_key import get_bearer_token, is_valid_api_key
 from neironir.auth.csrf import verify_csrf_token
 from neironir.auth.session import (
     SESSION_PAYLOAD_KEY,
@@ -47,6 +48,15 @@ def _forbidden(detail: str) -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
         detail={"code": "forbidden", "message": detail},
+    )
+
+
+def _api_key_unauthorized(detail: str) -> HTTPException:
+    """401 for the M2M Bearer path — never includes the key value (NFR-001)."""
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail={"code": "invalid_api_key", "message": detail},
+        headers={"WWW-Authenticate": "Bearer"},
     )
 
 
@@ -108,6 +118,36 @@ def require_admin_auth(
     return payload
 
 
+def require_documents_auth(
+    request: Request,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> None:
+    """Validate the Bearer API key IF an Authorization header is present.
+
+    Precedence (Q2/TD-002): a present Authorization header ALWAYS takes
+    the API-key path — the session cookie is never consulted as a
+    fallback, so an invalid Bearer fails even with a valid session.
+
+    No Authorization header → pass-through (existing UI/local
+    behaviour, FR-003). 403 is never used here (TD-001). The key
+    value never appears in messages, logs or responses (NFR-001).
+    """
+    if request.headers.get("authorization") is None:
+        return
+
+    token = get_bearer_token(request)
+    if not token:
+        raise _api_key_unauthorized("Authorization header must use the Bearer scheme.")
+
+    if not settings.api_key_set:
+        raise _api_key_unauthorized("API keys are not configured.")
+
+    if not is_valid_api_key(token, settings.api_key_set):
+        raise _api_key_unauthorized("Invalid API key.")
+
+    request.state.auth_via = "api_key"
+
+
 def verify_csrf(
     request: Request,
     settings: Annotated[Settings, Depends(get_settings)],
@@ -137,7 +177,7 @@ def verify_csrf(
     if not verify_csrf_token(
         header_token=header_token,
         cookie_token=cookie_token,
-        header_csrf_sid=csrf_sid,
+        session_csrf_sid=csrf_sid,
         secret=settings.session_secret,
     ):
         raise _forbidden("CSRF token missing or mismatched")
@@ -160,5 +200,6 @@ def _csrf_sid_from_session(request: Request, settings: Settings) -> str | None:
 __all__ = [
     "get_session_payload",
     "require_admin_auth",
+    "require_documents_auth",
     "verify_csrf",
 ]
