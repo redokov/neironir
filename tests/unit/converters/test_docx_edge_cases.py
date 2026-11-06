@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from docx import Document
 from neironir.converters.base import Replacement
 from neironir.converters.docx import DocxConverter
@@ -156,10 +157,9 @@ def test_build_replacement_at_very_end_of_last_paragraph(tmp_path: Path) -> None
 
 
 def test_build_replacement_crosses_boundary_after_empty_paragraph(tmp_path: Path) -> None:
-    """A replacement crossing a boundary through an empty paragraph is clipped.
+    """A replacement crossing a boundary through an empty paragraph raises ValueError.
 
-    The placeholder replaces text only in the first element; the rest
-    of the span is dropped (no crash).
+    No clipping happens for cross-boundary spans any more (T1 regression).
     """
     source = _make_docx(tmp_path, ["first", "", "second"])
     converter = DocxConverter()
@@ -171,14 +171,10 @@ def test_build_replacement_crosses_boundary_after_empty_paragraph(tmp_path: Path
         entity_type=EntityType.PRIVATE_EMAIL,
         placeholder="<PRIVATE_EMAIL1>",
     )
-    converter.build(source, target, [replacement])
+    with pytest.raises(ValueError, match="crosses a paragraph/cell boundary"):
+        converter.build(source, target, [replacement])
 
-    # The span [4:9] starts in "first" at char 4..5 ("t") and crosses
-    # into the empty paragraph. After clipping, only "t" in "first"
-    # is replaced. The empty paragraph and "second" are untouched.
-    rewritten = Document(str(target))
-    paragraphs = [p.text for p in rewritten.paragraphs]
-    assert paragraphs[0] == "firs<PRIVATE_EMAIL1>"
+    assert not target.exists() or target.stat().st_size == 0
 
 
 def test_build_replacements_supplied_in_reverse_order(tmp_path: Path) -> None:
@@ -219,3 +215,53 @@ def test_build_zero_length_replacement_at_offset(tmp_path: Path) -> None:
     converter.build(source, target, [replacement])
 
     assert _read_paragraphs(target) == ["a<PRIVATE_EMAIL1>b"]
+
+
+def test_nested_table_pii_is_extracted_and_replaced(tmp_path: Path) -> None:
+    """PII inside a nested table cell is extracted AND sanitized (T3 regression).
+
+    ``extract_text`` and ``build`` must share the same recursive element walk
+    so that offsets projected from detection map back to the nested cell.
+    """
+    document = Document()
+    tbl = document.add_table(rows=1, cols=2)
+    cell00 = tbl.rows[0].cells[0]
+    cell00.add_paragraph("inner email a@b.com")
+    nested_tbl = cell00.add_table(rows=1, cols=1)
+    nested_tbl.rows[0].cells[0].add_paragraph("nested email x@y.com")
+    tbl.rows[0].cells[1].add_paragraph("plain")
+    source = tmp_path / "source.docx"
+    document.save(str(source))
+
+    converter = DocxConverter()
+    text = converter.extract_text(source)
+
+    # The nested cell's text must appear in the extracted text.
+    assert "nested email x@y.com" in text
+
+    idx = text.index("nested email x@y.com")
+    replacement = Replacement(
+        start=idx,
+        end=idx + len("nested email x@y.com"),
+        entity_type=EntityType.PRIVATE_EMAIL,
+        placeholder="<PRIVATE_EMAIL1>",
+    )
+    target = tmp_path / "out.docx"
+    converter.build(source, target, [replacement])
+
+    # The sanitized output must not leak the nested PII anywhere.
+    rebuilt = Document(str(target))
+    all_texts: list[str] = []
+    for para in rebuilt.paragraphs:
+        all_texts.append(para.text)
+    for t in rebuilt.tables:
+        for row in t.rows:
+            for cell in row.cells:
+                all_texts.append(cell.text)
+                for nested in cell.tables:
+                    for nrow in nested.rows:
+                        for ncell in nrow.cells:
+                            all_texts.append(ncell.text)
+    joined = "\n".join(all_texts)
+    assert "x@y.com" not in joined
+    assert "<PRIVATE_EMAIL1>" in joined

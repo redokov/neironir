@@ -22,10 +22,18 @@
   // DOM refs (populated in init)
   var $ = {};
   var currentJobId = null;
+  // T10: upload race counter — only the most recent upload request may
+  // update the UI; earlier (slower) responses are ignored.
+  var uploadSeq = 0;
   var pollTimer = null;
   var abortController = null;
   var reviewData = null; // { text, spans }
   var pendingActions = []; // user edits not yet submitted
+  // T11: session token for the review loader. openReview() captures the
+  // current job id and a fresh token; late responses of an abandoned
+  // session (user uploaded a new file / closed the review) are ignored so
+  // they cannot overwrite reviewData of a newer job.
+  var reviewSeq = 0;
 
   function init() {
     $.dropzone = document.getElementById("dropzone");
@@ -240,13 +248,17 @@
       form.append("output_format", "md");
     }
 
+    var myUpload = ++uploadSeq;
     var res;
     try {
       res = await fetch("/api/v1/documents/", { method: "POST", body: form });
     } catch (e) {
+      if (myUpload !== uploadSeq) return; // superseded by a newer upload
       showError("Не удалось связаться с сервером");
       return;
     }
+
+    if (myUpload !== uploadSeq) return; // stale response of an older upload
 
     if (!res.ok) {
       var message = "Ошибка загрузки (" + res.status + ")";
@@ -264,6 +276,7 @@
     }
 
     var job = await res.json();
+    if (myUpload !== uploadSeq) return; // a newer upload won the race
     currentJobId = job.id;
     $.jobStatus.textContent = statusLabel(job.status);
     startPolling();
@@ -313,7 +326,9 @@
       $.download.download = "";
       $.download.setAttribute("data-ext", ext);
       $.download.hidden = false;
-      $.reviewBtn.hidden = false;
+      // T12 (#24): apply-feedback rewrites plain text only — the review UI
+      // makes no sense for DOCX output (the endpoint returns 400).
+      $.reviewBtn.hidden = ext !== "md";
       $.jobStatus.textContent = "Готово (" + ext + ")";
       // Show processing note if present (e.g. fallback from neural to mock).
       if (job.processing_note) {
@@ -390,23 +405,31 @@
   async function openReview() {
     if (!currentJobId) return;
 
+    var myReview = ++reviewSeq;
+    var myJobId = currentJobId;
+
     $.reviewSection.hidden = false;
     $.preview.textContent = "Загрузка...";
     clearApplyMessages();
 
     try {
-      var res = await fetch("/api/v1/documents/" + currentJobId + "/annotations");
+      var res = await fetch("/api/v1/documents/" + myJobId + "/annotations");
+      if (myReview !== reviewSeq || myJobId !== currentJobId) return;
       if (!res.ok) throw new Error("HTTP " + res.status);
-      reviewData = await res.json();
+      var data = await res.json();
+      if (myReview !== reviewSeq || myJobId !== currentJobId) return;
+      reviewData = data;
       pendingActions = [];
       renderPreview();
       updateApplyButton();
     } catch (e) {
+      if (myReview !== reviewSeq || myJobId !== currentJobId) return;
       $.preview.textContent = "Не удалось загрузить данные для проверки: " + e.message;
     }
   }
 
   function closeReview() {
+    reviewSeq++; // invalidate in-flight annotation loads (T11)
     $.reviewSection.hidden = true;
     $.preview.innerHTML = "";
     reviewData = null;
@@ -558,6 +581,7 @@
       ["private_email", "Email"],
       ["private_phone", "Телефон"],
       ["private_date", "Дата"],
+      ["private_url", "URL"],
       ["private_organization", "Организация"],
       ["account_number", "Счёт/ИНН"],
       ["secret", "Секрет"],
@@ -659,6 +683,7 @@
       private_phone: "PRIVATE_PHONE",
       private_date: "PRIVATE_DATE",
       private_url: "PRIVATE_URL",
+      private_organization: "PRIVATE_ORGANIZATION",
       account_number: "ACCOUNT_NUMBER",
       secret: "SECRET",
     };

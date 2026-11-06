@@ -250,6 +250,7 @@ class TestM2MBearerPrecedence:
         # Log in to obtain a genuinely valid session cookie.
         login = client.post(
             "/login",
+            headers={"Origin": "http://testserver"},
             data={"username": TEST_USER, "password": TEST_PASSWORD},
             follow_redirects=False,
         )

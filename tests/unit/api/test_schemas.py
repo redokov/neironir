@@ -10,6 +10,7 @@ import pytest
 from neironir.api.schemas import (
     DownloadResultResponse,
     ErrorResponse,
+    FeedbackItemIn,
     HealthResponse,
     JobResponse,
 )
@@ -183,3 +184,76 @@ class TestDownloadResultResponse:
         del payload["size"]  # type: ignore[arg-type]
         with pytest.raises(ValidationError):
             DownloadResultResponse(**payload)  # type: ignore[arg-type]
+
+
+class TestFeedbackItemInValidation:
+    """T8: malformed feedback is rejected on the schema, not in the applier."""
+
+    def test_valid_action_passes(self) -> None:
+        item = FeedbackItemIn(
+            action="add", start=0, end=5, entity_type="private_email", text="a@b.com"
+        )
+        assert item.action == "add"
+
+    def test_unknown_action_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            FeedbackItemIn(
+                action="delete", start=0, end=5, entity_type="private_email", text="x"
+            )
+
+    def test_negative_start_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            FeedbackItemIn(
+                action="add", start=-1, end=5, entity_type="private_email", text="x"
+            )
+
+    def test_end_before_start_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            FeedbackItemIn(
+                action="add", start=10, end=5, entity_type="private_email", text="x"
+            )
+
+    def test_equal_start_end_allowed_for_insert(self) -> None:
+        item = FeedbackItemIn(
+            action="add", start=7, end=7, entity_type="private_phone", text=""
+        )
+        assert item.start == item.end == 7
+
+    def test_unknown_entity_type_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            FeedbackItemIn(
+                action="add", start=0, end=5, entity_type="not_a_type", text="x"
+            )
+
+    def test_known_entity_type_accepted(self) -> None:
+        item = FeedbackItemIn(
+            action="reject",
+            start=0,
+            end=5,
+            entity_type="private_person",
+            text="x",
+            original_span_index=3,
+        )
+        assert item.original_span_index == 3
+
+    def test_negative_original_span_index_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            FeedbackItemIn(
+                action="reject",
+                start=0,
+                end=5,
+                entity_type="private_person",
+                text="x",
+                original_span_index=-1,
+            )
+
+    def test_null_original_span_index_allowed(self) -> None:
+        item = FeedbackItemIn(
+            action="add",
+            start=0,
+            end=5,
+            entity_type="private_url",
+            text="http://e.com",
+            original_span_index=None,
+        )
+        assert item.original_span_index is None

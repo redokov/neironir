@@ -109,24 +109,32 @@ def _clear_auth_cookies(response: Response, settings: Settings) -> None:
 
 
 def _origin_matches(request: Request) -> bool:
-    """Loose check that ``Origin`` or ``Referer`` host matches the request host.
+    """Strict check that ``Origin``/``Referer`` point at our own host.
 
-    Browsers send ``Origin`` on POST. When it's absent (some legacy
-    browsers / proxies) we fall back to ``Referer``. If both are
-    missing, we let the request through — true CSRF is impossible in
-    that case for an HTML form, and any attacker controlling the
-    browser already has the password.
+    T13 (#18): a present header **must** carry a scheme and a netloc.
+    ``Origin: null`` (sandboxed iframes, file:// pages, some privacy
+    strippers) used to pass because its netloc was empty — exactly the
+    shape a cross-origin attacker can trigger.  A login POST with
+    *neither* header is also refused: same-origin fetch/XHR from our own
+    SPA always sends one of them, so requiring it costs nothing and closes
+    the no-header hole.
     """
     host = request.url.netloc
-    for header_name in ("origin", "referer"):
-        value = request.headers.get(header_name, "")
+    origin = request.headers.get("origin", "")
+    referer = request.headers.get("referer", "")
+    if not origin and not referer:
+        return False
+    for value in (origin, referer):
         if not value:
             continue
         try:
             parsed = urlparse(value)
         except ValueError:
             return False
-        if parsed.netloc and parsed.netloc != host:
+        # Scheme + netloc are mandatory; "null" has neither.
+        if not parsed.scheme or not parsed.netloc:
+            return False
+        if parsed.netloc != host:
             return False
     return True
 

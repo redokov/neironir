@@ -416,6 +416,32 @@ async def stop_training() -> bool:
             return False
 
 
+async def _terminate_then_kill(
+    proc: asyncio.subprocess.Process,
+    *,
+    grace_seconds: float = 5.0,
+) -> None:
+    """Escalate termination: SIGTERM → grace → SIGKILL → reap.
+
+    A hung child that traps or ignores SIGTERM must still die; otherwise
+    ``_STATE`` stays ``RUNNING`` forever and the admin UI polls a zombie.
+    """
+    if proc.returncode is not None:
+        return
+    with contextlib.suppress(ProcessLookupError):
+        proc.terminate()
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=grace_seconds)
+        return
+    except TimeoutError:
+        pass
+    logger.warning("training subprocess ignored SIGTERM — sending SIGKILL")
+    with contextlib.suppress(ProcessLookupError):
+        proc.kill()
+    with contextlib.suppress(Exception):
+        await asyncio.wait_for(proc.wait(), timeout=grace_seconds)
+
+
 async def _monitor(proc: asyncio.subprocess.Process, timeout_seconds: int = 10800) -> None:
     """Read ``opf train`` output and update :data:`_STATE`.
 
@@ -484,23 +510,47 @@ async def _monitor(proc: asyncio.subprocess.Process, timeout_seconds: int = 1080
             if text:
                 stderr_lines.append(text)
 
+    readers = (
+        asyncio.ensure_future(_read_stdout()),
+        asyncio.ensure_future(_read_stderr()),
+    )
     try:
         await asyncio.wait_for(
-            asyncio.gather(_read_stdout(), _read_stderr()),
+            asyncio.gather(*readers),
             timeout=timeout_seconds,
         )
     except TimeoutError:
         logger.warning("opf train timed out after %s seconds — terminating", timeout_seconds)
-        proc.terminate()
-        await proc.wait()
+        # T16 (#16): terminate alone is not enough — a process ignoring
+        # SIGTERM would hang ``await proc.wait()`` forever and keep the
+        # pipes open.  escalate: terminate → wait(kill_grace) → kill →
+        # wait, then close the transport/pipe handles in finally.
+        await _terminate_then_kill(proc)
         _STATE.status = TrainingStatus.FAILED
         _STATE.error = f"Training timed out after {timeout_seconds} seconds."
         return
     except Exception as exc:  # noqa: BLE001 — we never want the monitor to crash
         logger.exception("training monitor crashed")
         _STATE.error = str(exc)
-        await proc.wait()
+        await _terminate_then_kill(proc)
         return
+    finally:
+        # Cancel any reader still pending and drain the tasks so no pipe
+        # buffer stays blocked behind an abandoned readline().
+        for reader in readers:
+            if not reader.done():
+                reader.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await asyncio.gather(*readers)
+        # StreamReader has no close(); the transport owns the pipe.  Feed
+        # EOF so any lingering reader wakes up, then shut the transport down.
+        for stream in (proc.stdout, proc.stderr):
+            if stream is not None:
+                stream.feed_eof()
+        transport = getattr(proc, "_transport", None)
+        if transport is not None:
+            with contextlib.suppress(Exception):
+                transport.close()
 
     await proc.wait()
 

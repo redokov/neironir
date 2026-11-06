@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from uuid import uuid4
 
@@ -492,4 +493,77 @@ class TestErrorHandling:
                 job_dir=job_dir,
                 output_ext="pdf",  # type: ignore[arg-type]
                 feedback_actions=[],
+            )
+
+
+class TestAlignmentStrictness:
+    """T7: annotation↔placeholder alignment is strictly positional.
+
+    The old entity-type scan could bind an annotation to *another* span's
+    placeholder when an annotation of the same type was missing, so a
+    reject restored foreign text.  A desynchronised alignment must now be
+    refused outright.
+    """
+
+    async def test_missing_annotation_refuses_reject_not_foreign_text(
+        self, tmp_path: Path
+    ) -> None:
+        job_dir, storage, job = _build_md_job(
+            tmp_path, "First alice@example.com second bob@example.org"
+        )
+        await _process(job_dir, storage, job)
+
+        # Drop the first annotation from annotations.json — placeholders for
+        # both emails remain in result.md, so counts disagree.
+        ann_path = storage.job_dir(job.id) / "annotations.json"
+        annotations = json.loads(ann_path.read_text(encoding="utf-8"))
+        assert len(annotations) == 2
+        ann_path.write_text(json.dumps(annotations[1:]), encoding="utf-8")
+
+        applier = FeedbackApplier()
+        with pytest.raises(ValueError, match="placeholder count"):
+            applier.apply(
+                job_dir=storage.job_dir(job.id),
+                output_ext="md",
+                feedback_actions=[
+                    {
+                        "action": "reject",
+                        "start": 0,
+                        "end": 0,
+                        "entity_type": "private_email",
+                        "text": "",
+                        "original_span_index": 0,
+                    }
+                ],
+            )
+
+        # Nothing was written: the original cleaned file is intact.
+        result = (storage.job_dir(job.id) / "result.md").read_text(encoding="utf-8")
+        assert "<PRIVATE_EMAIL1>" in result and "<PRIVATE_EMAIL2>" in result
+
+    async def test_wrong_offsets_in_annotation_refused(self, tmp_path: Path) -> None:
+        job_dir, storage, job = _build_md_job(tmp_path, "mail me: alice@example.com")
+        await _process(job_dir, storage, job)
+
+        ann_path = storage.job_dir(job.id) / "annotations.json"
+        annotations = json.loads(ann_path.read_text(encoding="utf-8"))
+        # Corrupt the recorded text so it no longer matches the source span.
+        annotations[0]["text"] = "bob@example.org"
+        ann_path.write_text(json.dumps(annotations), encoding="utf-8")
+
+        applier = FeedbackApplier()
+        with pytest.raises(ValueError, match="text mismatch"):
+            applier.apply(
+                job_dir=storage.job_dir(job.id),
+                output_ext="md",
+                feedback_actions=[
+                    {
+                        "action": "reject",
+                        "start": 0,
+                        "end": 0,
+                        "entity_type": "private_email",
+                        "text": "",
+                        "original_span_index": 0,
+                    }
+                ],
             )

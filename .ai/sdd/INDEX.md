@@ -33,7 +33,7 @@
 
 | Field              | Value | Notes                                                   |
 |--------------------|-------|---------------------------------------------------------|
-| Next Feature ID    | 006   | Вычислять из ФС перед созданием нового спека           |
+| Next Feature ID    | 007   | Вычислять из ФС перед созданием нового спека           |
 | Numbering Issues   | none  | —                                                       |
 
 ## Specs
@@ -47,6 +47,7 @@
 | 003 | Admin UI: counters, feedback, training (FR-3) | review:done          | `.ai/sdd/specs/003-admin-ui/requirements.md` | `.ai/sdd/specs/003-admin-ui/design.md` | `.ai/sdd/specs/003-admin-ui/tasks.md` | `.ai/sdd/specs/003-admin-ui/review.md` |
 | 004 | Stabilize Phase 2 (mypy + tests)             | review:done          | `.ai/sdd/specs/004-stabilize-phase2/requirements.md` | `.ai/sdd/specs/004-stabilize-phase2/design.md` | `.ai/sdd/specs/004-stabilize-phase2/tasks.md` | `.ai/sdd/specs/004-stabilize-phase2/review.md` |
 | 005 | Programmatic (M2M) API                       | review:done          | `.ai/sdd/specs/005-programmatic-api/requirements.md` | `.ai/sdd/specs/005-programmatic-api/design.md` | `.ai/sdd/specs/005-programmatic-api/tasks.md` | `.ai/sdd/specs/005-programmatic-api/review.md` |
+| 006 | Code Review Fixes (opus + deepseek cross-review) | tasks:approved | — (источник: `code-review-agent-report.md`) | — | `.ai/sdd/specs/006-code-review-fixes/tasks.md` | — |
 
 > Примечание: статусы выше — **план для adopt-фазы**. Реальные `.status`-файлы появятся после того, как пользователь одобрит генерацию реверс-документации. См. `.ai/sdd/PLAN.md`, секция «Adopt-фаза».
 

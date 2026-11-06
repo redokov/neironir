@@ -51,6 +51,11 @@ def get_storage(settings: Settings = Depends(get_settings)) -> LocalStorage:
     return LocalStorage(Path(settings.storage_dir))
 
 
+
+# Cached result of the asyncio-subprocess capability probe (see
+# :func:`_probe_subprocess`).  ``None`` means "not probed yet".
+_subprocess_probe_cache: bool | None = None
+
 _privacy_client: PrivacyFilterClient | None = None
 
 
@@ -62,30 +67,66 @@ def _probe_subprocess() -> bool:
     probe at startup and fall back to mock mode if needed.
 
     This function may be called from inside or outside a running event
-    loop — it handles both cases by checking for an existing loop.
+    loop.  **Inside** a loop it must stay non-blocking: the historical
+    implementation used ``run_coroutine_threadsafe`` + ``future.result``,
+    which deadlocks when called from the same loop that should run the
+    coroutine (uvicorn startup / request thread).  The timeout was then
+    mistaken for ``NotImplementedError``, silently downgrading combined
+    mode to mock on machines where subprocesses work fine.  Callers
+    inside a loop therefore get a cached decision, probed lazily in a
+    dedicated thread at first use.
     """
+    global _subprocess_probe_cache
+
+    if _subprocess_probe_cache is not None:
+        return _subprocess_probe_cache
+
     try:
-        loop = asyncio.get_running_loop()
+        asyncio.get_running_loop()
+        inside_loop = True
     except RuntimeError:
-        # No running loop — safe to call asyncio.run().
+        inside_loop = False
+
+    if not inside_loop:
+        # Safe to run directly on this thread.
         try:
             asyncio.run(_probe_coro())
-            return True
+            result = True
         except NotImplementedError:
-            return False
+            result = False
+        _subprocess_probe_cache = result
+        return result
 
-    # A running loop is present (e.g. uvicorn startup).  Schedule the
-    # probe as a task and wait synchronously.
-    import concurrent.futures
+    # We are on an event-loop thread: spin up a throwaway loop in another
+    # thread (its own ProactorEventLoop, fully functional) instead of
+    # round-tripping through *this* loop.
+    import threading
 
-    future = asyncio.run_coroutine_threadsafe(_probe_coro(), loop)
-    try:
-        future.result(timeout=10)
-        return True
-    except NotImplementedError:
+    box: list[bool] = []
+    done = threading.Event()
+
+    def _worker() -> None:
+        try:
+            asyncio.new_event_loop()
+            try:
+                asyncio.run(_probe_coro())
+                box.append(True)
+            except NotImplementedError:
+                box.append(False)
+            except Exception:  # noqa: BLE001 — any other failure = unusable
+                box.append(False)
+        finally:
+            done.set()
+
+    t = threading.Thread(target=_worker, name="subprocess-probe", daemon=True)
+    t.start()
+    # Never block longer than the probe budget; treat a hang as unsupported
+    # but do NOT cache that verdict so a later call can retry.
+    if not done.wait(timeout=10.0):
         return False
-    except concurrent.futures.TimeoutError:
-        return False
+    result = box[0] if box else False
+    _subprocess_probe_cache = result
+    return result
 
 
 async def _probe_coro() -> None:

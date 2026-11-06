@@ -92,7 +92,9 @@ class TestRuntimeSettingsEndpoint:
 
     def test_get_settings_returns_default(self, live_server: str) -> None:
         # Admin endpoints require a session — log in first.
-        with httpx.Client(base_url=live_server, timeout=5) as client:
+        with httpx.Client(
+            base_url=live_server, timeout=5, headers={"Origin": live_server}
+        ) as client:
             login = client.post(
                 "/login",
                 data={"username": "admin", "password": "test-pass"},

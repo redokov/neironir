@@ -52,8 +52,15 @@ def client(tmp_path: Path) -> Generator[TestClient, None, None]:
     app.dependency_overrides[require_admin_auth] = lambda: {"is_admin": True, "user": TEST_USER}
     app.dependency_overrides[verify_csrf] = lambda: None
 
-    with TestClient(app) as c:
+    # httpx (TestClient) does not send Origin/Referer on its own; real
+    # browsers always send one of them for a same-origin form POST, and the
+    # CSRF guard (T13) now requires it.  Default to our own testserver origin
+    # so login tests exercise the realistic path.
+    c = TestClient(app, headers={"Origin": "http://testserver"})
+    try:
         yield c
+    finally:
+        c.close()
 
 
 class TestLogin:
@@ -259,3 +266,100 @@ class TestAdminEndpointsRequireAuth:
         with TestClient(app) as client:
             r = client.get("/api/v1/rules")
             assert r.status_code == 401
+
+
+class TestNextRedirectSanitization:
+    """T9: ?next= must never redirect off-origin (open redirect)."""
+
+    def test_login_with_external_next_redirects_to_admin(self, client: TestClient) -> None:
+        r = client.post(
+            "/login",
+            data={"username": TEST_USER, "password": TEST_PASSWORD},
+            params={"next": "https://evil.example/steal"},
+            follow_redirects=False,
+        )
+        assert r.status_code in (302, 303)
+        location = r.headers["location"]
+        assert not location.startswith("https://evil.example")
+        assert location == "/admin"
+
+    def test_login_with_protocol_relative_next_is_rejected(self, client: TestClient) -> None:
+        r = client.post(
+            "/login",
+            data={"username": TEST_USER, "password": TEST_PASSWORD},
+            params={"next": "//evil.example/x"},
+            follow_redirects=False,
+        )
+        assert r.status_code in (302, 303)
+        assert r.headers["location"] == "/admin"
+
+    def test_login_with_javascript_scheme_next_is_rejected(self, client: TestClient) -> None:
+        r = client.post(
+            "/login",
+            data={"username": TEST_USER, "password": TEST_PASSWORD},
+            params={"next": "javascript:alert(1)"},
+            follow_redirects=False,
+        )
+        assert r.status_code in (302, 303)
+        assert r.headers["location"] == "/admin"
+
+    def test_login_with_local_next_is_preserved(self, client: TestClient) -> None:
+        r = client.post(
+            "/login",
+            data={"username": TEST_USER, "password": TEST_PASSWORD},
+            params={"next": "/admin/"},
+            follow_redirects=False,
+        )
+        assert r.status_code in (302, 303)
+        assert r.headers["location"] == "/admin/"
+
+
+class TestOriginNullRejected:
+    """T13 (#18): Origin/Referer must carry scheme+netloc, and "null" fails."""
+
+    def test_origin_null_is_403(self, client: TestClient) -> None:
+        r = client.post(
+            "/login",
+            data={"username": TEST_USER, "password": TEST_PASSWORD},
+            headers={"Origin": "null"},
+            follow_redirects=False,
+        )
+        assert r.status_code == 403
+        assert r.json()["detail"]["code"] == "csrf_origin_check_failed"
+
+    def test_referer_null_is_403(self, client: TestClient) -> None:
+        r = client.post(
+            "/login",
+            data={"username": TEST_USER, "password": TEST_PASSWORD},
+            headers={"Referer": "null"},
+            follow_redirects=False,
+        )
+        assert r.status_code == 403
+
+    def test_missing_both_headers_is_403(self, client: TestClient) -> None:
+        # The fixture injects a default Origin; remove it explicitly.
+        client.headers.pop("Origin", None)
+        r = client.post(
+            "/login",
+            data={"username": TEST_USER, "password": TEST_PASSWORD},
+            follow_redirects=False,
+        )
+        assert r.status_code == 403
+
+    def test_cross_origin_still_403(self, client: TestClient) -> None:
+        r = client.post(
+            "/login",
+            data={"username": TEST_USER, "password": TEST_PASSWORD},
+            headers={"Origin": "http://evil.example"},
+            follow_redirects=False,
+        )
+        assert r.status_code == 403
+
+    def test_same_origin_post_succeeds(self, client: TestClient) -> None:
+        r = client.post(
+            "/login",
+            data={"username": TEST_USER, "password": TEST_PASSWORD},
+            headers={"Origin": "http://testserver"},
+            follow_redirects=False,
+        )
+        assert r.status_code in (302, 303)

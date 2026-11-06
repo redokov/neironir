@@ -158,9 +158,56 @@ def test_app_no_stale_annotations_refetch() -> None:
     # The old buggy pattern re-fetched /annotations inside applyFeedbackToFile.
     assert "apply-feedback" in src  # the endpoint is still used
     # Ensure the only fetch to annotations is in openReview, not in apply flow.
+    # T11: the fetch uses a captured myJobId snapshot instead of the live
+    # currentJobId, so a late response cannot target a newer job.
     ann_fetches = re.findall(
-        r'fetch\("/api/v1/documents/" \+ currentJobId \+ "/annotations"\)', src
+        r'fetch\("/api/v1/documents/" \+ (?:currentJobId|myJobId) \+ "/annotations"\)', src
     )
     assert len(ann_fetches) == 1, (
         f"expected exactly 1 annotations fetch (openReview), got {len(ann_fetches)}"
     )
+
+
+def test_upload_race_guard_present() -> None:
+    """T10: a stale upload response must not overwrite the UI state.
+
+    ``upload()`` takes a monotonic sequence token before the fetch and
+    checks it after every await; responses of superseded uploads return
+    early without touching ``currentJobId``.
+    """
+    src = _app_source()
+    assert "var myUpload = ++uploadSeq;" in src, "no upload sequence token"
+    # Every path that mutates shared state after an await is guarded.
+    guarded = [
+        line.strip()
+        for line in src.splitlines()
+        if "myUpload !== uploadSeq" in line
+    ]
+    assert len(guarded) >= 3, f"expected guards on all post-await paths, got {guarded}"
+    # currentJobId assignment happens only under the guard.
+    assign_idx = src.index("currentJobId = job.id")
+    guard_idx = src.rindex("myUpload !== uploadSeq", 0, assign_idx)
+    assert guard_idx > src.index("var myUpload = ++uploadSeq")
+
+
+def test_open_review_race_guard() -> None:
+    """T11: a late annotations response must not overwrite a newer review.
+
+    ``openReview`` captures a monotonic ``reviewSeq`` token and the job id;
+    after every await it verifies both still match, otherwise it returns
+    without touching ``reviewData``.  ``closeReview`` bumps the token so an
+    abandoned session is invalidated too.
+    """
+    src = _app_source()
+    assert "var myReview = ++reviewSeq;" in src, "no review session token"
+    # Guards on all post-await paths of openReview.
+    fn = src[src.index("async function openReview") : src.index("function closeReview")]
+    guarded = [line for line in fn.splitlines() if "myReview !== reviewSeq" in line]
+    assert len(guarded) >= 3, f"expected guards on all post-await paths, got {len(guarded)}"
+    # reviewData assignment only under the guard.
+    assign_idx = fn.index("reviewData = data")
+    guard_idx = fn.rindex("myReview !== reviewSeq", 0, assign_idx)
+    assert guard_idx < assign_idx
+    # closeReview invalidates in-flight loads.
+    close_fn = src[src.index("function closeReview") : src.index("function renderPreview")]
+    assert "reviewSeq++" in close_fn

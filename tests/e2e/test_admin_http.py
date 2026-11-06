@@ -117,7 +117,7 @@ def admin_cookies(server_url: str) -> dict[str, str]:
     if _ADMIN_COOKIES is not None:
         return _ADMIN_COOKIES
 
-    with httpx.Client(base_url=server_url) as client:
+    with httpx.Client(base_url=server_url, headers={"Origin": server_url}) as client:
         r = client.post(
             "/login",
             data={"username": E2E_ADMIN_USER, "password": E2E_ADMIN_PASSWORD},
@@ -255,6 +255,7 @@ def test_admin_unauthorized_bad_password(server_url: str) -> None:
     with httpx.Client(base_url=server_url, follow_redirects=False) as client:
         r = client.post(
             "/login",
+            headers={"Origin": server_url},
             data={"username": E2E_ADMIN_USER, "password": "wrong"},
             timeout=5.0,
         )

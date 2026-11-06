@@ -228,3 +228,217 @@ def test_health_endpoint_still_works(
     response = client.get("/api/v1/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_submit_feedback_on_pending_job_returns_409(
+    client_and_storage: tuple[TestClient, LocalStorage],
+) -> None:
+    """T4 regression: feedback is rejected for a job that is not COMPLETED."""
+    client, storage = client_and_storage
+    job = Job(
+        source_filename="note.md",
+        source_ext="md",
+        status=JobStatus.PENDING,
+    )
+    storage.save_job(job)
+
+    response = client.post(
+        f"/api/v1/documents/{job.id}/feedback",
+        json={
+            "actions": [
+                {
+                    "action": "reject",
+                    "start": 0,
+                    "end": 5,
+                    "entity_type": "private_person",
+                    "text": "Иванов",
+                    "original_span_index": 0,
+                }
+            ]
+        },
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "job_not_ready"
+    # feedback.json must NOT be created for a non-COMPLETED job.
+    assert not (storage.job_dir(job.id) / "feedback.json").exists()
+
+
+def test_submit_feedback_on_unknown_job_returns_404(
+    client_and_storage: tuple[TestClient, LocalStorage],
+) -> None:
+    """T4 regression: feedback for a nonexistent job is 404."""
+    client, _storage = client_and_storage
+
+    response = client.post(
+        f"/api/v1/documents/{uuid4()}/feedback",
+        json={
+            "actions": [
+                {
+                    "action": "reject",
+                    "start": 0,
+                    "end": 5,
+                    "entity_type": "private_person",
+                    "text": "Иванов",
+                    "original_span_index": 0,
+                }
+            ]
+        },
+    )
+    assert response.status_code == 404
+    assert response.json()["detail"]["code"] == "job_not_found"
+
+
+def test_submit_feedback_on_corrupted_job_returns_409(
+    client_and_storage: tuple[TestClient, LocalStorage],
+) -> None:
+    """T4 regression: corrupted job.json yields 409, not a 500 crash."""
+    client, storage = client_and_storage
+    job = Job(
+        source_filename="note.md",
+        source_ext="md",
+        status=JobStatus.COMPLETED,
+    )
+    storage.save_job(job)
+    (storage.job_dir(job.id) / "job.json").write_text("{not json", encoding="utf-8")
+
+    response = client.post(
+        f"/api/v1/documents/{job.id}/feedback",
+        json={
+            "actions": [
+                {
+                    "action": "reject",
+                    "start": 0,
+                    "end": 5,
+                    "entity_type": "private_person",
+                    "text": "Иванов",
+                    "original_span_index": 0,
+                }
+            ]
+        },
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "job_corrupted"
+    assert not (storage.job_dir(job.id) / "feedback.json").exists()
+
+
+def test_feedback_end_before_start_returns_422(
+    client_and_storage: tuple[TestClient, LocalStorage],
+) -> None:
+    """T8 regression: malformed feedback is rejected on the schema (422)."""
+    client, storage = client_and_storage
+    job = Job(
+        source_filename="note.md",
+        source_ext="md",
+        status=JobStatus.COMPLETED,
+    )
+    storage.save_job(job)
+
+    response = client.post(
+        f"/api/v1/documents/{job.id}/feedback",
+        json={
+            "actions": [
+                {
+                    "action": "add",
+                    "start": 10,
+                    "end": 5,
+                    "entity_type": "private_email",
+                    "text": "x",
+                }
+            ]
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_feedback_unknown_action_returns_422(
+    client_and_storage: tuple[TestClient, LocalStorage],
+) -> None:
+    client, storage = client_and_storage
+    job = Job(
+        source_filename="note.md",
+        source_ext="md",
+        status=JobStatus.COMPLETED,
+    )
+    storage.save_job(job)
+
+    response = client.post(
+        f"/api/v1/documents/{job.id}/feedback",
+        json={
+            "actions": [
+                {
+                    "action": "delete",
+                    "start": 0,
+                    "end": 5,
+                    "entity_type": "private_email",
+                    "text": "x",
+                }
+            ]
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_feedback_unknown_entity_type_returns_422(
+    client_and_storage: tuple[TestClient, LocalStorage],
+) -> None:
+    client, storage = client_and_storage
+    job = Job(
+        source_filename="note.md",
+        source_ext="md",
+        status=JobStatus.COMPLETED,
+    )
+    storage.save_job(job)
+
+    response = client.post(
+        f"/api/v1/documents/{job.id}/feedback",
+        json={
+            "actions": [
+                {
+                    "action": "add",
+                    "start": 0,
+                    "end": 5,
+                    "entity_type": "not_a_type",
+                    "text": "x",
+                }
+            ]
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_download_completed_job_without_result_returns_404(
+    client_and_storage: tuple[TestClient, LocalStorage],
+) -> None:
+    """T17 regression (#17): missing result file must be 404, not 500."""
+    client, storage = client_and_storage
+    job = Job(
+        source_filename="note.md",
+        source_ext="md",
+        status=JobStatus.COMPLETED,
+    )
+    storage.save_job(job)
+    # Deliberately do NOT save the result file.
+
+    response = client.get(f"/api/v1/documents/{job.id}/download")
+    assert response.status_code == 404, response.text
+    assert response.json()["detail"]["code"] == "result_missing"
+
+
+def test_download_json_negotiation_missing_result_returns_404(
+    client_and_storage: tuple[TestClient, LocalStorage],
+) -> None:
+    """The JSON (base64) branch shares the same missing-file guard."""
+    client, storage = client_and_storage
+    job = Job(
+        source_filename="note.md",
+        source_ext="md",
+        status=JobStatus.COMPLETED,
+    )
+    storage.save_job(job)
+
+    response = client.get(
+        f"/api/v1/documents/{job.id}/download",
+        headers={"Accept": "application/json"},
+    )
+    assert response.status_code == 404
+    assert response.json()["detail"]["code"] == "result_missing"

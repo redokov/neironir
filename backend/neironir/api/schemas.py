@@ -12,7 +12,9 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from neironir.domain.entity_type import EntityType
 
 
 class JobResponse(BaseModel):
@@ -68,14 +70,27 @@ class AnnotationsResponse(BaseModel):
 
 
 class FeedbackItemIn(BaseModel):
-    """A single user action from the frontend."""
+    """A single user action from the frontend.
 
-    action: str  # "confirm" | "reject" | "add"
-    start: int
-    end: int
-    entity_type: str
+    T8: malformed feedback is rejected at the schema boundary (422) instead
+    of silently reaching the applier. ``action`` and ``entity_type`` are
+    constrained to the documented vocabularies, offsets must be non-negative
+    with ``start <= end``, and ``original_span_index`` (when present) must
+    reference an existing annotation slot.
+    """
+
+    action: Literal["confirm", "reject", "add"]
+    start: int = Field(ge=0)
+    end: int = Field(ge=0)
+    entity_type: EntityType
     text: str
-    original_span_index: int | None = None
+    original_span_index: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _check_range(self) -> FeedbackItemIn:
+        if self.end < self.start:
+            raise ValueError("end must be >= start")
+        return self
 
 
 class FeedbackSubmit(BaseModel):

@@ -379,9 +379,11 @@
         .then(function (r) { return r.json(); })
         .then(function (body) {
           applyTrainingStatus(body);
-          if (body.status !== "running" && lastTrainingStatus === "running") {
-            // Just transitioned out of running — leave polling on, but the
-            // next manual refresh will see the final state.
+          // T12 (#27): once training reaches a final state there is nothing
+          // left to poll — stop the interval instead of hammering the API
+          // forever in a background tab.
+          if (body.status !== "running") {
+            stopTrainingPolling();
           }
           lastTrainingStatus = body.status;
         })
@@ -389,6 +391,13 @@
           /* ignore transient network errors */
         });
     }, TRAINING_POLL_MS);
+  }
+
+  function stopTrainingPolling() {
+    if (trainingPollTimer) {
+      clearInterval(trainingPollTimer);
+      trainingPollTimer = null;
+    }
   }
 
   function ensureTrainingPolling() {
@@ -635,7 +644,11 @@
   }
 
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", function () {
+    // T12 (#27): clear the training interval when the tab goes away so a
+  // closed admin page never leaves a dangling timer behind.
+  window.addEventListener("beforeunload", stopTrainingPolling);
+
+  document.addEventListener("DOMContentLoaded", function () {
       init();
       loadSettings();
     });

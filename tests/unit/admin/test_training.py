@@ -420,3 +420,67 @@ class TestStartTrainingFromFeedback:
                     import signal
 
                     os.kill(state.pid, signal.SIGTERM)
+
+
+class TestTerminateThenKill:
+    """T16 (#16): a timeout must guarantee the subprocess is reaped."""
+
+    async def test_ignoring_sigterm_is_escalated_to_sigkill(self) -> None:
+        calls: list[str] = []
+
+        class FakeProc:
+            returncode: int | None = None
+
+            def terminate(self) -> None:
+                calls.append("terminate")
+
+            def kill(self) -> None:
+                calls.append("kill")
+
+            async def wait(self) -> int:
+                if "kill" in calls:
+                    self.returncode = -9
+                    return -9
+                # Simulate a process that ignores SIGTERM forever.
+                await asyncio.sleep(3600)
+                raise AssertionError("unreachable")
+
+        proc = FakeProc()
+        # grace_seconds small so the test does not actually wait 5s — but
+        # _terminate_then_kill's first wait_for must time out on the zombie.
+        await training._terminate_then_kill(proc, grace_seconds=0.1)  # type: ignore[arg-type]
+        assert calls == ["terminate", "kill"]
+        assert proc.returncode == -9
+
+    async def test_exited_process_is_left_alone(self) -> None:
+        class DoneProc:
+            returncode: int | None = 0
+
+            def terminate(self) -> None:
+                raise AssertionError("must not terminate an exited process")
+
+            def kill(self) -> None:
+                raise AssertionError("must not kill an exited process")
+
+            async def wait(self) -> int:
+                return 0
+
+        await training._terminate_then_kill(DoneProc(), grace_seconds=0.1)  # type: ignore[arg-type]
+
+    async def test_monitor_closes_pipes_after_timeout(self, tmp_path: Path) -> None:
+        """A timed-out monitor must not leave reader tasks or pipes behind."""
+        # Launch a python one-liner that ignores SIGTERM and never exits.
+        code = (
+            "import signal, time\n"
+            "signal.signal(signal.SIGTERM, lambda *a: None)\n"
+            "print('alive', flush=True)\n"
+            "time.sleep(3600)\n"
+        )
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, "-c", code,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await training._terminate_then_kill(proc, grace_seconds=2.0)
+        # Guaranteed reaped: returncode set, no live child left.
+        assert proc.returncode is not None

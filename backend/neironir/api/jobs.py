@@ -54,7 +54,11 @@ from neironir.config import Settings
 from neironir.domain.job import Job, JobStatus
 from neironir.privacy.client import PrivacyFilterClient
 from neironir.storage.local import LocalStorage, atomic_write
-from neironir.workers.feedback_applier import FeedbackApplier
+from neironir.workers.feedback_applier import (
+    AlignmentMismatchError,
+    FeedbackApplier,
+    OverlappingActionsError,
+)
 from neironir.workers.pipeline import run_job
 
 logger = logging.getLogger(__name__)
@@ -166,7 +170,7 @@ async def upload(
     content = await file.read()
     if len(content) > settings.max_file_size:
         raise _http_error(
-            status.HTTP_413_CONTENT_TOO_LARGE,
+            413,  # literal: starlette renamed the constant across versions
             code="file_too_large",
             message=(f"Uploaded file exceeds the maximum size of {settings.max_file_size} bytes."),
         )
@@ -263,6 +267,18 @@ async def download(
 
     output_ext = job.effective_output_ext
     result_path = storage.job_dir(job_id) / f"result.{output_ext}"
+    # T17 (#17): a COMPLETED job whose result file is gone (manual cleanup,
+    # disk failure, interrupted pipeline) must answer 404 — not crash with a
+    # FileNotFoundError deep inside FileResponse/read_bytes.
+    if not result_path.is_file():
+        raise _http_error(
+            status.HTTP_404_NOT_FOUND,
+            code="result_missing",
+            message=(
+                f"Result file for job {job_id} is missing; re-upload the "
+                "document to clean it again."
+            ),
+        )
     download_name = _download_filename(job.source_filename, output_ext)
     media_type = _media_type_for(output_ext)
 
@@ -345,7 +361,10 @@ async def get_annotations(
 @router.post(
     "/{job_id}/feedback",
     response_model=FeedbackResponse,
-    responses={404: {"model": ErrorResponse, "description": "Job not found"}},
+    responses={
+        404: {"model": ErrorResponse, "description": "Job not found"},
+        409: {"model": ErrorResponse, "description": "Job is not yet completed"},
+    },
 )
 async def submit_feedback(
     job_id: UUID,
@@ -353,7 +372,29 @@ async def submit_feedback(
     storage: LocalStorage = Depends(get_storage),
 ) -> FeedbackResponse:
     """Accept user corrections for a completed job."""
-    _ensure_job_dir_exists(storage, job_id)
+    try:
+        job = storage.load_job(job_id)
+    except FileNotFoundError as exc:
+        raise _http_error(
+            status.HTTP_404_NOT_FOUND,
+            code="job_not_found",
+            message="Job not found.",
+        ) from exc
+    except (json.JSONDecodeError, KeyError, ValueError) as exc:
+        raise _http_error(
+            status.HTTP_409_CONFLICT,
+            code="job_corrupted",
+            message="Job metadata is corrupted; feedback cannot be accepted.",
+        ) from exc
+    if job.status != JobStatus.COMPLETED:
+        raise _http_error(
+            status.HTTP_409_CONFLICT,
+            code="job_not_ready",
+            message=(
+                f"Job is in status {job.status.value!r}; feedback is "
+                "only available for completed jobs."
+            ),
+        )
 
     feedback = {
         "job_id": str(job_id),
@@ -438,18 +479,44 @@ async def apply_feedback(
         json.dumps(feedback, ensure_ascii=False, indent=2),
     )
 
-    summary = FeedbackApplier().apply(
-        job_dir=storage.job_dir(job_id),
-        output_ext=job.effective_output_ext,
-        feedback_actions=list(feedback["actions"] or []),  # type: ignore[arg-type]
-    )
+    # T6: overlapping add/reject ranges are rejected with 400 **before**
+    # anything is written; ``feedback.json`` was just saved above, so remove
+    # it again when the applier refuses the action set.
+    try:
+        summary = FeedbackApplier().apply(
+            job_dir=storage.job_dir(job_id),
+            output_ext=job.effective_output_ext,
+            feedback_actions=list(feedback["actions"] or []),  # type: ignore[arg-type]
+        )
+    except OverlappingActionsError as exc:
+        feedback_path.unlink(missing_ok=True)
+        raise _http_error(
+            status.HTTP_400_BAD_REQUEST,
+            code="overlapping_actions",
+            message=str(exc),
+        ) from exc
+    except AlignmentMismatchError as exc:
+        # T7: annotations and placeholders cannot be paired 1:1 — refuse the
+        # action set instead of restoring foreign text.
+        feedback_path.unlink(missing_ok=True)
+        raise _http_error(
+            status.HTTP_409_CONFLICT,
+            code="alignment_mismatch",
+            message=(
+                "Detected spans and cleaned placeholders are out of sync; "
+                "feedback cannot be applied safely."
+            ),
+        ) from exc
 
     # Append the new ADD actions to the cumulative training dataset.
-    # This lets the model learn from corrections **immediately** —
-    # admins don't have to wait for the next training run to harvest
-    # the signal.
+    # Only do it if this call applied something new — otherwise a repeated
+    # apply-feedback would duplicate records in the dataset (idempotency).
     dataset_path = _training_dataset_path(settings)
-    training_records_added = append_job_feedback_to_dataset(storage.job_dir(job_id), dataset_path)
+    training_records_added = (
+        append_job_feedback_to_dataset(storage.job_dir(job_id), dataset_path)
+        if summary.added
+        else 0
+    )
 
     logger.info(
         "applied feedback for job %s: %d add, %d reject, %d confirm; %d new training record(s)",

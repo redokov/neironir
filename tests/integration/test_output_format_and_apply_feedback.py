@@ -380,6 +380,49 @@ class TestApplyFeedbackEndpoint:
         assert "user@example.com" in content
         assert "<PRIVATE_EMAIL" not in content
 
+    def test_apply_feedback_is_idempotent_on_repeat(
+        self, client_and_storage: tuple[TestClient, Path]
+    ) -> None:
+        """T5 regression: applying the same actions twice is a no-op.
+
+        The second apply must rebase on the pristine ``result.orig.md``
+        snapshot, so the file is not rewritten again (no duplicated
+        placeholders, no offset drift).
+        """
+        client, storage_dir = client_and_storage
+        r = client.post(
+            "/api/v1/documents/",
+            files={"file": ("doc.md", b"user@example.com ", "text/markdown")},
+        )
+        job_id = r.json()["id"]
+        _wait_completed(client, job_id)
+
+        payload = {
+            "actions": [
+                {
+                    "action": "add",
+                    "start": 16,
+                    "end": 17,
+                    "entity_type": "private_phone",
+                    "text": " ",
+                }
+            ],
+            "comment": None,
+        }
+        r1 = client.post(f"/api/v1/documents/{job_id}/apply-feedback", json=payload)
+        assert r1.status_code == 200
+        result_path = storage_dir / "jobs" / job_id / "result.md"
+        first = result_path.read_text(encoding="utf-8")
+        assert "<PRIVATE_PHONE1>" in first
+
+        r2 = client.post(f"/api/v1/documents/{job_id}/apply-feedback", json=payload)
+        assert r2.status_code == 200
+        second = result_path.read_text(encoding="utf-8")
+        assert second == first  # no second rewrite
+        assert second.count("<PRIVATE_PHONE1>") == 1  # no duplicated placeholder
+        # The pristine snapshot exists for future rebasing.
+        assert (storage_dir / "jobs" / job_id / "result.orig.md").is_file()
+
 
 class TestApplyFeedbackTrainingDataset:
     """``POST /apply-feedback`` must stream ADD actions into the
@@ -539,3 +582,127 @@ class TestApplyFeedbackTrainingDataset:
         r2 = client.post(f"/api/v1/documents/{job_id}/apply-feedback", json=payload)
         body = r2.json()
         assert body["training_records_added"] == 0
+
+
+class TestApplyFeedbackOverlapValidation:
+    """T6: overlapping ADD ranges are refused with 400 before any write."""
+
+    def test_two_overlapping_adds_return_400_and_touch_nothing(
+        self, client_and_storage: tuple[TestClient, Path]
+    ) -> None:
+        client, storage_dir = client_and_storage
+        r = client.post(
+            "/api/v1/documents/",
+            files={"file": ("doc.md", b"user@example.com plus text", "text/markdown")},
+        )
+        job_id = r.json()["id"]
+        _wait_completed(client, job_id)
+
+        job_dir = storage_dir / "jobs" / job_id
+        result_before = (job_dir / "result.md").read_text(encoding="utf-8")
+
+        payload = {
+            "actions": [
+                {
+                    "action": "add",
+                    "start": 17,
+                    "end": 21,
+                    "entity_type": "private_phone",
+                    "text": "plus",
+                },
+                {
+                    "action": "add",
+                    "start": 19,
+                    "end": 25,
+                    "entity_type": "private_url",
+                    "text": "s text",
+                },
+            ],
+            "comment": None,
+        }
+        r2 = client.post(f"/api/v1/documents/{job_id}/apply-feedback", json=payload)
+        assert r2.status_code == 400, r2.text
+        detail = r2.json()["detail"]
+        assert detail["code"] == "overlapping_actions"
+        assert "overlaps" in detail["message"]
+
+        # Nothing was written: no feedback.json, result.md untouched.
+        assert not (job_dir / "feedback.json").exists()
+        assert not (job_dir / "applied_actions.json").exists()
+        assert (job_dir / "result.md").read_text(encoding="utf-8") == result_before
+
+    def test_non_overlapping_adds_still_accepted(
+        self, client_and_storage: tuple[TestClient, Path]
+    ) -> None:
+        client, storage_dir = client_and_storage
+        r = client.post(
+            "/api/v1/documents/",
+            files={"file": ("doc.md", b"user@example.com aaa bbb", "text/markdown")},
+        )
+        job_id = r.json()["id"]
+        _wait_completed(client, job_id)
+
+        payload = {
+            "actions": [
+                {
+                    "action": "add",
+                    "start": 17,
+                    "end": 20,
+                    "entity_type": "private_phone",
+                    "text": "aaa",
+                },
+                {
+                    "action": "add",
+                    "start": 21,
+                    "end": 24,
+                    "entity_type": "private_url",
+                    "text": "bbb",
+                },
+            ],
+            "comment": None,
+        }
+        r2 = client.post(f"/api/v1/documents/{job_id}/apply-feedback", json=payload)
+        assert r2.status_code == 200, r2.text
+        assert r2.json()["added"] == 2
+
+
+class TestApplyFeedbackAlignmentMismatch:
+    """T7 (endpoint): a desynchronised alignment is refused with 409, not 500."""
+
+    def test_corrupted_annotations_return_409_not_500(
+        self, client_and_storage: tuple[TestClient, Path]
+    ) -> None:
+        client, storage_dir = client_and_storage
+        r = client.post(
+            "/api/v1/documents/",
+            files={"file": ("doc.md", b"a@b.com and c@d.com", "text/markdown")},
+        )
+        job_id = r.json()["id"]
+        _wait_completed(client, job_id)
+
+        # Remove one annotation — two placeholders remain in result.md.
+        ann_path = storage_dir / "jobs" / job_id / "annotations.json"
+        annotations = json.loads(ann_path.read_text(encoding="utf-8"))
+        assert len(annotations) == 2
+        ann_path.write_text(json.dumps(annotations[1:]), encoding="utf-8")
+
+        payload = {
+            "actions": [
+                {
+                    "action": "reject",
+                    "start": 0,
+                    "end": 5,
+                    "entity_type": "private_email",
+                    "text": "a@b.com",
+                    "original_span_index": 0,
+                }
+            ],
+            "comment": None,
+        }
+        r2 = client.post(f"/api/v1/documents/{job_id}/apply-feedback", json=payload)
+        assert r2.status_code == 409, r2.text
+        assert r2.json()["detail"]["code"] == "alignment_mismatch"
+        # feedback.json was rolled back; result.md untouched.
+        assert not (storage_dir / "jobs" / job_id / "feedback.json").exists()
+        content = (storage_dir / "jobs" / job_id / "result.md").read_text(encoding="utf-8")
+        assert "<PRIVATE_EMAIL1>" in content and "<PRIVATE_EMAIL2>" in content

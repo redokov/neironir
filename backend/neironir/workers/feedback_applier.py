@@ -37,6 +37,9 @@ _CONVERTERS: dict[str, DocumentConverter] = {
     "md": MarkdownConverter(),
 }
 
+# Per-job history of applied feedback actions (T5 idempotency).
+_HISTORY_NAME = "applied_actions.json"
+
 
 # ---------------------------------------------------------------------------
 # Result types
@@ -51,6 +54,18 @@ class ApplySummary:
     added: int
     kept: int
     rejected: int
+
+
+class OverlappingActionsError(ValueError):
+    """Raised when two or more feedback actions cover the same text range.
+
+    The conflicting pairs are reported so the API can surface them as a 400
+    response **before** anything is written to disk.
+    """
+
+    def __init__(self, conflicts: list[str]) -> None:
+        self.conflicts = conflicts
+        super().__init__("overlapping feedback actions: " + "; ".join(conflicts))
 
 
 @dataclass(frozen=True)
@@ -92,6 +107,82 @@ def _initial_counters(result_text: str) -> dict[EntityType, int]:
     return counters
 
 
+def _canonical(value: object) -> str:
+    """Stable string form of an action field.
+
+    ``entity_type`` arrives as an :class:`~neironir.domain.entity_type.EntityType`
+    member from the schema but as its plain string value after the JSON
+    round-trip through ``applied_actions.json``; both must hash to the same
+    key or repeated applies are treated as new actions (T5 idempotency).
+    """
+    if hasattr(value, "value"):
+        return str(value.value)
+    return str(value)
+
+
+def _action_key(action: dict[str, object]) -> tuple[str, str, str, str, str, str]:
+    """Canonical identity of a feedback action used for history dedup."""
+    return (
+        _canonical(action.get("action", "")),
+        _canonical(action.get("start", "")),
+        _canonical(action.get("end", "")),
+        _canonical(action.get("entity_type", "")),
+        _canonical(action.get("text", "")),
+        _canonical(action.get("original_span_index", "")),
+    )
+
+
+def _validate_no_overlaps(
+    new_actions: list[dict[str, object]],
+    annotations: list[dict[str, object]],
+) -> None:
+    """Reject overlapping ADD ranges **before** any write (T6).
+
+    Only ``add`` actions inject text into ranges that were not detected by
+    the model; two adds covering the same source span produce ambiguous
+    offsets and must be refused. ``reject`` actions target *detected*
+    annotations by index — an add may legitimately select a sub-range of a
+    rejected annotation, so rejects are not part of this check.
+    """
+    ranges: list[tuple[int, int, str]] = []
+    for i, action in enumerate(new_actions):
+        if str(action.get("action", "")) != "add":
+            continue
+        start = int(str(action.get("start", -1)))
+        end = int(str(action.get("end", -1)))
+        if start < 0 or end <= start:
+            continue  # malformed — skipped later with a warning
+        ranges.append((start, end, f"add[{i}] ({start}..{end})"))
+
+    conflicts: list[str] = []
+    for a in range(len(ranges)):
+        for b in range(a + 1, len(ranges)):
+            s1, e1, l1 = ranges[a]
+            s2, e2, l2 = ranges[b]
+            if s1 < e2 and s2 < e1:
+                conflicts.append(f"{l1} overlaps {l2}")
+    if conflicts:
+        raise OverlappingActionsError(conflicts)
+
+
+def _load_applied_actions(job_dir: Path) -> list[dict[str, object]]:
+    """Return the action history written by previous ``apply`` calls.
+
+    An absent or unreadable history is treated as empty so that legacy
+    job directories keep working.
+    """
+    path = job_dir / _HISTORY_NAME
+    if not path.is_file():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return [a for a in data if isinstance(a, dict)]
+
+
 def _converter_for(ext: str) -> DocumentConverter:
     """Return the converter registered for ``ext`` or raise :class:`ValueError`."""
     try:
@@ -111,55 +202,71 @@ def _list_placeholders(cleaned_text: str) -> list[tuple[EntityType, int, int, st
     return out
 
 
+class AlignmentMismatchError(ValueError):
+    """Raised when annotations and placeholders cannot be paired 1:1 (T7).
+
+    The pipeline writes placeholders strictly left-to-right in annotation
+    order, so the i-th annotation must correspond to the i-th placeholder.
+    A mismatch means the alignment is untrustworthy and applying feedback
+    could restore *someone else's* text — the applier refuses the whole
+    action set instead.
+    """
+
+
 def _build_alignment(
     annotations: list[dict[str, object]],
     cleaned_text: str,
-) -> list[SpanAlignment]:
-    """Pair each annotation with the placeholder the pipeline wrote for it.
+    original_text: str,
+) -> dict[int, SpanAlignment]:
+    """Pair the i-th annotation with the i-th placeholder, verifying offsets.
 
-    Placeholders are written left-to-right in the cleaned text in the
-    same order as the annotations, so we can match them by index.
+    Returns a mapping ``{annotation_index: SpanAlignment}``.  Strict
+    positional pairing replaces the previous entity-type scan, which could
+    bind an annotation to another span's placeholder when an annotation of
+    the same type was missing from ``annotations.json`` (T7 regression).
+
+    Raises :class:`AlignmentMismatchError` when counts differ, the entity
+    types disagree, or the recorded original offsets do not match the
+    source text at those positions.
     """
-    alignments: list[SpanAlignment] = []
     placeholders = _list_placeholders(cleaned_text)
-    pi = 0
-    for ann in annotations:
+    if len(placeholders) != len(annotations):
+        raise AlignmentMismatchError(
+            f"placeholder count {len(placeholders)} != annotation count {len(annotations)}"
+        )
+
+    alignments: dict[int, SpanAlignment] = {}
+    for i, (ann, ph) in enumerate(zip(annotations, placeholders, strict=True)):
         try:
             orig_start = int(str(ann["start"]))
             orig_end = int(str(ann["end"]))
-            etype_str = str(ann.get("entity_type", ""))
-            entity_type = EntityType(etype_str)
-        except (KeyError, ValueError):
-            continue
-        while pi < len(placeholders):
-            ph = placeholders[pi]
-            if ph[0] == entity_type:
-                alignments.append(
-                    SpanAlignment(
-                        orig_start=orig_start,
-                        orig_end=orig_end,
-                        cleaned_start=ph[1],
-                        cleaned_end=ph[2],
-                        entity_type=entity_type,
-                        placeholder=ph[3],
-                    )
-                )
-                pi += 1
-                break
-            pi += 1
-        else:
-            logger.warning(
-                "ran out of placeholders while aligning annotation %d..%d (%s)",
-                orig_start,
-                orig_end,
-                entity_type.value,
+            entity_type = EntityType(str(ann.get("entity_type", "")))
+        except (KeyError, ValueError) as exc:
+            raise AlignmentMismatchError(f"annotation {i} is malformed: {exc}") from exc
+        # T7: verify the recorded offsets against the source text.
+        snippet = original_text[orig_start:orig_end]
+        ann_text = str(ann.get("text", ""))
+        if ann_text and snippet != ann_text:
+            raise AlignmentMismatchError(
+                f"annotation {i}: text mismatch at {orig_start}..{orig_end}"
             )
-            break
+        if ph[0] != entity_type:
+            raise AlignmentMismatchError(
+                f"annotation {i}: type {entity_type.value} != placeholder {ph[3]}"
+            )
+        alignments[i] = SpanAlignment(
+            orig_start=orig_start,
+            orig_end=orig_end,
+            cleaned_start=ph[1],
+            cleaned_end=ph[2],
+            entity_type=entity_type,
+            placeholder=ph[3],
+        )
     return alignments
 
 
 def _map_original_offset(
-    alignments: list[SpanAlignment],
+    alignments: dict[int, SpanAlignment],
     orig_offset: int,
     original_len: int,
 ) -> int | None:
@@ -174,7 +281,7 @@ def _map_original_offset(
 
     cleaned_cursor = 0
     orig_cursor = 0
-    for al in alignments:
+    for al in alignments.values():
         # Plain segment before this alignment.
         if al.orig_start > orig_cursor:
             plain_len = al.orig_start - orig_cursor
@@ -184,7 +291,7 @@ def _map_original_offset(
             cleaned_cursor += plain_len
         # Placeholder segment.
         if orig_cursor <= orig_offset < al.orig_end:
-            return al.cleaned_start
+            return int(al.cleaned_start)
         if orig_offset >= al.orig_end:
             orig_cursor = al.orig_end
             cleaned_cursor = al.cleaned_end
@@ -228,6 +335,14 @@ class FeedbackApplier:
         if not result_path.is_file():
             raise FileNotFoundError(f"result.{output_ext} missing in {job_dir}")
 
+        # T5 (idempotency): the first apply snapshots the pipeline output as
+        # ``result.orig.{ext}``; this and every later apply builds from that
+        # snapshot instead of the already-rewritten ``result.{ext}``, so
+        # repeated applies of the same actions are a no-op and the
+        # annotation-based alignments never drift.
+        pristine_path = job_dir / f"result.orig.{output_ext}"
+        base_path = pristine_path if pristine_path.is_file() else result_path
+
         annotations_path = job_dir / "annotations.json"
         if not annotations_path.is_file():
             raise FileNotFoundError(f"annotations.json missing in {job_dir}")
@@ -239,9 +354,8 @@ class FeedbackApplier:
             raise FileNotFoundError(f"annotations.json unreadable: {exc}") from exc
 
         converter = _converter_for(output_ext)
-        cleaned_text = converter.extract_text(result_path)
-        alignments = _build_alignment(annotations, cleaned_text)
-        ann_to_alignment = {(a.orig_start, a.orig_end): a for a in alignments}
+        cleaned_text = converter.extract_text(base_path)
+        alignments = _build_alignment(annotations, cleaned_text, original_text)
 
         counters = _initial_counters(cleaned_text)
 
@@ -253,11 +367,27 @@ class FeedbackApplier:
             )
         )
 
+        # T5 idempotency: actions from earlier calls are recorded in
+        # ``applied_actions.json``.  Only actions not yet applied are
+        # processed now; the full merged history is replayed on top of the
+        # pristine base so a repeated apply is a no-op and the placeholder
+        # numbering stays monotonic across calls.
+        history = _load_applied_actions(job_dir)
+        seen = {_action_key(a) for a in history}
+        new_actions = [a for a in actions if _action_key(a) not in seen]
+        if not new_actions:
+            return ApplySummary(applied=0, added=0, kept=0, rejected=0)
+        # T6: refuse overlapping ranges before touching any file.
+        _validate_no_overlaps(new_actions, annotations)
+        merged = history + new_actions
+        n_history = len(history)
+
         applied = added = kept = rejected = 0
         reject_replacements: list[Replacement] = []
         add_replacements: list[Replacement] = []
 
-        for action in actions:
+        for idx, action in enumerate(merged):
+            is_new = idx >= n_history
             kind = action.get("action")
             etype_str = action.get("entity_type", "")
             try:
@@ -289,8 +419,9 @@ class FeedbackApplier:
                         placeholder=placeholder,
                     )
                 )
-                added += 1
-                applied += 1
+                if is_new:
+                    added += 1
+                    applied += 1
             elif kind == "reject":
                 original_index = action.get("original_span_index")
                 if original_index is None:
@@ -299,8 +430,10 @@ class FeedbackApplier:
                 if original_index < 0 or original_index >= len(annotations):
                     continue
                 ann = annotations[original_index]
-                key = (int(str(ann["start"])), int(str(ann["end"])))
-                alignment = ann_to_alignment.get(key)
+                # T7: look the alignment up by annotation index directly; the
+                # previous (start, end) key could bind the annotation to a
+                # different placeholder when spans were skipped.
+                alignment = alignments.get(original_index)
                 if alignment is None:
                     logger.warning("could not reject span idx=%s — no alignment", original_index)
                     continue
@@ -312,10 +445,12 @@ class FeedbackApplier:
                         placeholder=str(ann.get("text", "")),
                     )
                 )
-                rejected += 1
-                applied += 1
+                if is_new:
+                    rejected += 1
+                    applied += 1
             elif kind == "confirm":
-                kept += 1
+                if is_new:
+                    kept += 1
             else:
                 logger.warning("unknown action %r", kind)
 
@@ -336,7 +471,19 @@ class FeedbackApplier:
             ordered = sorted(all_replacements, key=lambda r: r.start, reverse=True)
             for replacement in ordered:
                 text = text[: replacement.start] + replacement.placeholder + text[replacement.end :]
+            # Snapshot the pristine result before the first rewrite so that
+            # subsequent applies rebase on the original content.
+            if not pristine_path.is_file():
+                atomic_write(pristine_path, result_path.read_bytes())
             atomic_write(result_path, text)  # atomic write prevents partial files on crash
+
+        # Record the merged action history so future calls can replay it.
+        # Written after the result update so a crash between the two writes
+        # only causes the actions to be re-applied idempotently next time.
+        atomic_write(
+            job_dir / _HISTORY_NAME,
+            json.dumps(merged, ensure_ascii=False, indent=2),
+        )
 
         self._persist_counters(job_dir, counters)
 

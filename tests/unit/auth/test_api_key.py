@@ -129,3 +129,44 @@ class TestSettingsApiKeySet:
 
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__])
+
+
+class TestNoShortCircuitAcrossKeySet:
+    """T15 (#20): every key must be compared regardless of which one matches."""
+
+    def test_all_keys_compared_when_first_matches(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from neironir.auth import api_key as mod
+
+        compared: list[str] = []
+
+        def fake_compare_digest(a: str, b: str) -> bool:
+            compared.append(b)
+            return a == b
+
+        monkeypatch.setattr(mod.secrets, "compare_digest", fake_compare_digest)
+        keys = frozenset({"k1", "k2", "k3"})
+        assert mod.is_valid_api_key("k1", keys) is True
+        # Every key was visited — no early exit on the first match.
+        assert set(compared) == keys
+
+    def test_all_keys_compared_when_none_matches(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from neironir.auth import api_key as mod
+
+        compared: list[str] = []
+
+        def fake_compare_digest(a: str, b: str) -> bool:
+            compared.append(b)
+            return a == b
+
+        monkeypatch.setattr(mod.secrets, "compare_digest", fake_compare_digest)
+        keys = frozenset({"k1", "k2", "k3"})
+        assert mod.is_valid_api_key("nope", keys) is False
+        assert set(compared) == keys
+
+    def test_behaviour_unchanged(self) -> None:
+        keys = frozenset({"alpha", "beta"})
+        assert is_valid_api_key("alpha", keys)
+        assert is_valid_api_key("beta", keys)
+        assert not is_valid_api_key("gamma", keys)
+        assert not is_valid_api_key("", keys)
+        assert not is_valid_api_key("alpha", frozenset())

@@ -32,15 +32,22 @@ def parse_api_keys(raw: str) -> frozenset[str]:
 
 
 def is_valid_api_key(token: str, keys: frozenset[str]) -> bool:
-    """Constant-time comparison (``secrets.compare_digest`` per key).
+    """Constant-time membership check over the **whole** key set.
 
-    Every configured key is compared — no early exit on length or on
-    a match — so a timing side channel cannot reveal how close a
-    candidate token is to a real key (NFR-001).
+    T15 (#20): ``any(genexpr)`` short-circuits at the first match, so the
+    total verification time depends on *which* key matched — an attacker
+    measuring latency can binary-search the key order.  The result is
+    accumulated with ``|`` over every key so all comparisons always run
+    and the timing profile is independent of the matching position.
     """
     if not token or not keys:
         return False
-    return any(secrets.compare_digest(token, key) for key in keys)
+    result = 0
+    for key in keys:
+        # ``==`` keeps the compare_digest contract (bool), ``|`` never
+        # short-circuits — unlike ``or``.
+        result |= 1 if secrets.compare_digest(token, key) else 0
+    return bool(result)
 
 
 def get_bearer_token(request: Request) -> str | None:
