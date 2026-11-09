@@ -26,6 +26,8 @@
 | 002 | Конвертация .docx → .md (Pandoc с fallback)           | idea:captured   | `.ai/sdd/ideas/002-docx-to-md-conversion.md`      |
 | 003 | Admin UI (счётчики, feedback, дообучение)             | idea:captured   | `.ai/sdd/ideas/003-admin-ui.md`                   |
 | 004 | Programmatic (M2M) API                                  | idea:captured   | `.ai/sdd/ideas/004-programmatic-api.md`           |
+| 005 | Убрать `?access_token=` query-фолбэк (утечка токена в URL) | idea:captured | `.ai/sdd/ideas/005-remove-access-token-query-fallback.md` |
+| 006 | Персистентный реестр отозванных jti                  | idea:captured | `.ai/sdd/ideas/006-persistent-jti-revocation.md` |
 
 ## Feature Workspace
 
@@ -33,7 +35,7 @@
 
 | Field              | Value | Notes                                                   |
 |--------------------|-------|---------------------------------------------------------|
-| Next Feature ID    | 007   | Вычислять из ФС перед созданием нового спека           |
+| Next Feature ID    | 008   | Вычислять из ФС перед созданием нового спека           |
 | Numbering Issues   | none  | —                                                       |
 
 ## Specs
@@ -47,7 +49,7 @@
 | 003 | Admin UI: counters, feedback, training (FR-3) | review:done          | `.ai/sdd/specs/003-admin-ui/requirements.md` | `.ai/sdd/specs/003-admin-ui/design.md` | `.ai/sdd/specs/003-admin-ui/tasks.md` | `.ai/sdd/specs/003-admin-ui/review.md` |
 | 004 | Stabilize Phase 2 (mypy + tests)             | review:done          | `.ai/sdd/specs/004-stabilize-phase2/requirements.md` | `.ai/sdd/specs/004-stabilize-phase2/design.md` | `.ai/sdd/specs/004-stabilize-phase2/tasks.md` | `.ai/sdd/specs/004-stabilize-phase2/review.md` |
 | 005 | Programmatic (M2M) API                       | review:done          | `.ai/sdd/specs/005-programmatic-api/requirements.md` | `.ai/sdd/specs/005-programmatic-api/design.md` | `.ai/sdd/specs/005-programmatic-api/tasks.md` | `.ai/sdd/specs/005-programmatic-api/review.md` |
-| 006 | Code Review Fixes (opus + deepseek cross-review) | tasks:approved | — (источник: `code-review-agent-report.md`) | — | `.ai/sdd/specs/006-code-review-fixes/tasks.md` | — |
+| 006 | Code Review Fixes (opus + deepseek cross-review) | implementation:done | — (источник: `code-review-agent-report.md`) | — | `.ai/sdd/specs/006-code-review-fixes/tasks.md` (T1–T17, коммит `ff325dc`) | — |
 | 007 | Security and Privacy Hardening | implementation:done | `.ai/sdd/specs/007-security-privacy-hardening/requirements.md` | `.ai/sdd/specs/007-security-privacy-hardening/design.md` | `.ai/sdd/specs/007-security-privacy-hardening/tasks.md` | `.ai/sdd/specs/007-security-privacy-hardening/review.md` |
 
 > Примечание: статусы выше — **план для adopt-фазы**. Реальные `.status`-файлы появятся после того, как пользователь одобрит генерацию реверс-документации. См. `.ai/sdd/PLAN.md`, секция «Adopt-фаза».
@@ -58,11 +60,17 @@
 
 ## Next Actions
 
-- [ ] **Подтвердить объём adopt-фазы** с пользователем: какие из 3 завершённых фич (FR-1, FR-2, FR-3) переводить в SDD-артефакты в первую очередь.
-- [ ] Сгенерировать `requirements.md` для выбранных фич (реверс-документация из `docs/agents/03-backend.md` + кода).
-- [ ] Сгенерировать `design.md` и `tasks.md` по тем же источникам.
-- [ ] Сгенерировать `review.md` против существующих тестов (`make test-cov`).
-- [ ] Перед любой новой фичей — `/skill:sdd-idea` для обсуждения.
+- [x] **Спека 007 (security hardening)** — implementation:done, review passed
+      (mock-гейты: ruff/mypy/node, pytest 601/0/28, coverage 89.58%; коммит `251eb7d`).
+- [ ] **Релиз v0.2.0** — `make pre-release` + CHANGELOG + тег. **Блокер (P-008)**:
+      `make test-real` красный — `real_model`-сьюты не обновлены под контракты 007
+      (анонимный upload без loopback → 401; поллинг с Bearer вместо `X-Job-Token` → 404).
+      Правки тестов — только после согласования с пользователем.
+- [ ] Документация README/architecture синхронизирована с контрактами 007
+      (коммит `8f536c7`); `docs/api.md` — актуализировать раздел «Правила доступа»
+      (loopback-граница там ещё не описана) при следующей правке API-доков.
+- [ ] Идеи 005/006 (query-фолбэк токена, персистентный jti-реестр) — обсудить
+      с пользователем перед взятием в спеку.
 
 ## Workflow
 
