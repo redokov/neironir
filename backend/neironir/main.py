@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _package_version
 
 from fastapi import FastAPI, Request
 from fastapi.responses import Response
@@ -18,9 +20,17 @@ from neironir.auth.middleware import AdminUIAuthMiddleware
 from neironir.config import Settings
 
 
+def _app_version() -> str:
+    """Project version from the installed package metadata (pyproject.toml)."""
+    try:
+        return _package_version("neironir")
+    except PackageNotFoundError:
+        return "0.3.0"
+
+
 def create_app() -> FastAPI:
     """Build and return the FastAPI application instance."""
-    app = FastAPI(title="neironir", version="0.1.0")
+    app = FastAPI(title="neironir", version=_app_version())
 
     # Keep the health endpoint from phase 0/2. The dependency injection
     # for the rest of the app is wired via ``Depends`` so the route
