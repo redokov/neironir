@@ -74,8 +74,9 @@
       (`verify_job_access`), fetch-скачивание в UI (Blob/createObjectURL),
       ломающее изменение в CHANGELOG `[Unreleased]`. Гейты: ruff/mypy/node,
       mock 604/0, real 7/0.
-- [ ] Идея 006 (персистентный jti-реестр) — обсудить с пользователем перед
-      взятием в спеку.
+- [ ] Идея 006 (персистентный jti-реестр) — зафиксирована в backlog будущих
+      изменений (`.ai/sdd/PLAN.md`, «Future Changes»); в работу не берётся
+      до явного решения пользователя.
 
 ## Workflow
 
