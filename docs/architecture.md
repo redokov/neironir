@@ -59,8 +59,14 @@ neironir/
 │       ├── config.py          # pydantic-settings
 │       ├── api/
 │       │   ├── __init__.py
+│       │   ├── auth.py        # admin login/logout (сессии)
+│       │   ├── dependencies.py # dependency-фабрики
 │       │   ├── jobs.py        # /api/v1/documents
+│       │   ├── rules.py       # /api/v1/rules (proposals, unsafe_regex)
+│       │   ├── schemas.py     # request/response-модели
 │       │   └── ui.py          # GET / для отдачи SPA
+│       ├── admin/             # админ-панель: логин, правила, статистика
+│       ├── auth/              # сессии, CSRF, API-ключи, max-body-size (spec 007)
 │       ├── domain/
 │       │   ├── __init__.py
 │       │   ├── entity_type.py # EntityType enum, шаблоны
@@ -109,14 +115,38 @@ neironir/
     "source_ext": "docx",
     "created_at": "2025-...",
     "finished_at": null,
-    "error": null
+    "error": null,
+    "access_token_digest": "<sha256-hex digest> | null"
   }
   ```
-- БД не используем. Карту замен не храним (по решению).
+- БД не используем. Карту замен не храним (по решению). Самого job-токена
+  в хранилище нет — только его SHA-256 digest (spec 007 TD-003).
+
+## Авторизация и безопасность (обзор)
+
+- **Job-token (`X-Job-Token`).** Opaque `access_token` выдаётся ровно один
+  раз в ответе `202` на upload; в `job.json` хранится только SHA-256 digest.
+  Все job-scoped эндпоинты (статус, download, annotations, feedback,
+  preview) проверяют заголовок `X-Job-Token`; неверный/отсутствующий токен и
+  legacy-задача без digest для non-admin дают неразличимый `404`
+  `job_not_found` — API не раскрывает существование задачи.
+- **Граница авторизации.** Запрос без `Authorization` пропускается только от
+  loopback-клиента (локальный браузерный UI); non-loopback без валидного
+  Bearer-ключа получает `401`. Присланный невалидный Bearer — всегда `401`,
+  даже при валидной session-cookie (приоритет Bearer над сессией).
+- **JSON download cap.** JSON-ветка download (base64-контент) проверяется по
+  размеру файла до чтения в память: сверх `NEIRONIR_MAX_JSON_DOWNLOAD_SIZE`
+  (5 МиБ по умолчанию) — `413`; бинарная ветка капом не ограничена.
+- **Rules API.** Небезопасные regex-паттерны в правилах отклоняются
+  стабильным кодом ошибки `unsafe_regex` — отличимым от синтаксически
+  невалидных паттернов.
+
+Детали и примеры — в [api.md](./api.md).
 
 ## Ограничения MVP
 
-- Один пользователь, без авторизации.
+- Один пользователь; авторизация MVP — loopback-граница + per-job `X-Job-Token`
+  + admin-сессия, без ролей и per-key прав (`403` зарезервирован под них).
 - Без очередей (Celery/RQ) — обработка в `BackgroundTasks` FastAPI внутри того же процесса.
 - Без Docker. Без CI-обвязки уровня prod. Линт/тесты — локально или в GitHub Actions по желанию.
 - Поддержка форматов: **только `.md` и `.docx`**. Никаких PDF, RTF, изображений.
@@ -126,6 +156,6 @@ neironir/
 
 - Возврат исходных данных (reverse map).
 - Поддержка других форматов.
-- Авторизация и роли.
+- Роли и per-key права (широкая авторизация уже есть: job-токены, admin-сессии, M2M-ключи).
 - Хранение истории загрузок дольше сессии.
 - Горизонтальное масштабирование, очереди, брокеры.
