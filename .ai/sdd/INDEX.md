@@ -62,10 +62,9 @@
 
 - [x] **Спека 007 (security hardening)** — implementation:done, review passed
       (mock-гейты: ruff/mypy/node, pytest 601/0/28, coverage 89.58%; коммит `251eb7d`).
-- [ ] **Релиз v0.2.0** — `make pre-release` + CHANGELOG + тег. **Блокер (P-008)**:
-      `make test-real` красный — `real_model`-сьюты не обновлены под контракты 007
-      (анонимный upload без loopback → 401; поллинг с Bearer вместо `X-Job-Token` → 404).
-      Правки тестов — только после согласования с пользователем.
+- [x] **Релиз v0.2.0** — выпущен 2026-11-09 (тег `v0.2.0`). Блокер P-008 снят:
+      `real_model`-сьюты переведены на контракты 007 (loopback-фикстура +
+      `X-Job-Token`), `make test-real` — 7/0.
 - [ ] Документация README/architecture синхронизирована с контрактами 007
       (коммит `8f536c7`); `docs/api.md` — актуализировать раздел «Правила доступа»
       (loopback-граница там ещё не описана) при следующей правке API-доков.
