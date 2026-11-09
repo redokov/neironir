@@ -9,6 +9,7 @@ or the model.
 
 from __future__ import annotations
 
+import hashlib
 import shutil
 from collections.abc import Generator
 from pathlib import Path
@@ -22,6 +23,25 @@ from neironir.domain.job import Job, JobStatus
 from neironir.main import create_app
 from neironir.privacy.client import MockPrivacyFilterClient
 from neironir.storage.local import LocalStorage
+
+# Spec 007 T3: synthetic jobs stored directly in this file carry the SHA-256
+# digest of this fixed ASCII token, and follow-up calls present the token in
+# the ``X-Job-Token`` header — the production verification path is untouched.
+_SYNTHETIC_JOB_TOKEN = "tok-jobs-validation"
+
+
+def _synthetic_job_digest() -> str:
+    """SHA-256 hex digest of :data:`_SYNTHETIC_JOB_TOKEN` (test helper)."""
+    return hashlib.sha256(_SYNTHETIC_JOB_TOKEN.encode("utf-8")).hexdigest()
+
+
+JOB_TOKEN_HEADERS = {"X-Job-Token": _SYNTHETIC_JOB_TOKEN}
+
+
+async def _loopback_peer(request, call_next):
+    """Patch TestClient's synthetic peer to loopback (spec 007 TD-001)."""
+    request.scope["client"] = ("127.0.0.1", 80)
+    return await call_next(request)
 
 
 @pytest.fixture
@@ -45,6 +65,7 @@ def client(tmp_path: Path) -> Generator[tuple[TestClient, LocalStorage, Settings
     settings = Settings(max_file_size=8)
 
     app = create_app()
+    app.middleware("http")(_loopback_peer)
     app.dependency_overrides[get_storage] = lambda: storage
     app.dependency_overrides[get_privacy] = lambda: privacy
     app.dependency_overrides[get_settings] = lambda: settings
@@ -183,10 +204,13 @@ def test_download_pending_job_returns_409(
         source_filename="note.md",
         source_ext="md",
         status=JobStatus.PENDING,
+        access_token_digest=_synthetic_job_digest(),
     )
     storage.save_job(job)
 
-    response = test_client.get(f"/api/v1/documents/{job.id}/download")
+    response = test_client.get(
+        f"/api/v1/documents/{job.id}/download", headers=JOB_TOKEN_HEADERS
+    )
     assert response.status_code == 409
     body = response.json()["detail"]
     assert body["code"] == "job_not_ready"
@@ -202,10 +226,13 @@ def test_download_processing_job_returns_409(
         source_filename="note.md",
         source_ext="md",
         status=JobStatus.PROCESSING,
+        access_token_digest=_synthetic_job_digest(),
     )
     storage.save_job(job)
 
-    response = test_client.get(f"/api/v1/documents/{job.id}/download")
+    response = test_client.get(
+        f"/api/v1/documents/{job.id}/download", headers=JOB_TOKEN_HEADERS
+    )
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "job_not_ready"
 
@@ -219,10 +246,13 @@ def test_download_failed_job_returns_409(
         source_ext="md",
         status=JobStatus.FAILED,
         error="boom",
+        access_token_digest=_synthetic_job_digest(),
     )
     storage.save_job(job)
 
-    response = test_client.get(f"/api/v1/documents/{job.id}/download")
+    response = test_client.get(
+        f"/api/v1/documents/{job.id}/download", headers=JOB_TOKEN_HEADERS
+    )
     assert response.status_code == 409
 
 

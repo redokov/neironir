@@ -19,6 +19,12 @@ from neironir.privacy.client import MockPrivacyFilterClient
 from neironir.storage.local import LocalStorage
 
 
+async def _loopback_peer(request, call_next):
+    """Patch TestClient synthetic peer to loopback (spec 007 TD-001)."""
+    request.scope["client"] = ("127.0.0.1", 80)
+    return await call_next(request)
+
+
 def _build_docx(path: Path, paragraphs: list[str]) -> bytes:
     doc = Document()
     for text in paragraphs:
@@ -38,6 +44,7 @@ def client_and_storage(
     real_settings = get_settings().model_copy(update={"storage_dir": str(storage_dir)})
 
     app = create_app()
+    app.middleware("http")(_loopback_peer)
     app.dependency_overrides[get_settings] = lambda: real_settings
     app.dependency_overrides[get_storage] = lambda: storage
     app.dependency_overrides[get_privacy] = lambda: privacy
@@ -50,9 +57,10 @@ def client_and_storage(
     shutil.rmtree(storage_dir, ignore_errors=True)
 
 
-def _wait_completed(client: TestClient, job_id: str) -> dict:
+def _wait_completed(client: TestClient, job_id: str, token: str) -> dict:
+    headers = {"X-Job-Token": token}
     for _ in range(30):
-        r = client.get(f"/api/v1/documents/{job_id}")
+        r = client.get(f"/api/v1/documents/{job_id}", headers=headers)
         assert r.status_code == 200
         body = r.json()
         if body["status"] in {"completed", "failed"}:
@@ -76,7 +84,9 @@ class TestOutputFormatOnUpload:
             "/api/v1/documents/",
             files={"file": ("doc.md", b"hello", "text/markdown")},
         )
+
         assert r.status_code == 202
+        _ = r.json()["access_token"]  # token issued (spec 007)
         body = r.json()
         # Either ``null`` or ``"md"`` — both are valid: null is the
         # default and gets coerced at the storage layer.
@@ -91,7 +101,9 @@ class TestOutputFormatOnUpload:
             files={"file": ("doc.md", b"hello", "text/markdown")},
             data={"output_format": "md"},
         )
+
         assert r.status_code == 202
+        _ = r.json()["access_token"]  # token issued (spec 007)
         assert r.json()["output_ext"] == "md"
 
     def test_docx_with_output_format_md_converts(
@@ -108,11 +120,13 @@ class TestOutputFormatOnUpload:
             files={"file": ("contract.docx", binary, "application/octet-stream")},
             data={"output_format": "md"},
         )
+
         assert r.status_code == 202
+        r_token = r.json()["access_token"]
         body = r.json()
         assert body["output_ext"] == "md"
 
-        job = _wait_completed(client, body["id"])
+        job = _wait_completed(client, body["id"], r_token)
         assert job["status"] == "completed"
         # result.md exists in the job directory.
         result_path = storage_dir / "jobs" / body["id"] / "result.md"
@@ -130,8 +144,10 @@ class TestOutputFormatOnUpload:
             "/api/v1/documents/",
             files={"file": ("contract.docx", binary, "application/octet-stream")},
         )
+
         assert r.status_code == 202
-        job = _wait_completed(client, r.json()["id"])
+        r_token = r.json()["access_token"]
+        job = _wait_completed(client, r.json()["id"], r_token)
         assert job["status"] == "completed"
         # result.docx exists.
         result_path = storage_dir / "jobs" / job["id"] / "result.docx"
@@ -147,6 +163,7 @@ class TestOutputFormatOnUpload:
             files={"file": ("contract.docx", binary, "application/octet-stream")},
             data={"output_format": "pdf"},
         )
+
         assert r.status_code == 400
         assert r.json()["detail"]["code"] == "unsupported_output_format"
 
@@ -159,6 +176,7 @@ class TestOutputFormatOnUpload:
             files={"file": ("doc.md", b"hello", "text/markdown")},
             data={"output_format": "docx"},
         )
+
         assert r.status_code == 400
 
 
@@ -173,10 +191,13 @@ class TestDownloadRespectsOutputFormat:
             files={"file": ("contract.docx", binary, "application/octet-stream")},
             data={"output_format": "md"},
         )
-        job_id = r.json()["id"]
-        _wait_completed(client, job_id)
 
-        dl = client.get(f"/api/v1/documents/{job_id}/download")
+        assert r.status_code == 202
+        r_token = r.json()["access_token"]
+        job_id = r.json()["id"]
+        _wait_completed(client, job_id, r_token)
+
+        dl = client.get(f"/api/v1/documents/{job_id}/download", headers={"X-Job-Token": r_token})
         assert dl.status_code == 200
         assert dl.headers["content-type"].startswith("text/markdown")
         assert 'filename="contract.cleaned.md"' in dl.headers["content-disposition"]
@@ -190,10 +211,13 @@ class TestDownloadRespectsOutputFormat:
             "/api/v1/documents/",
             files={"file": ("contract.docx", binary, "application/octet-stream")},
         )
-        job_id = r.json()["id"]
-        _wait_completed(client, job_id)
 
-        dl = client.get(f"/api/v1/documents/{job_id}/download")
+        assert r.status_code == 202
+        r_token = r.json()["access_token"]
+        job_id = r.json()["id"]
+        _wait_completed(client, job_id, r_token)
+
+        dl = client.get(f"/api/v1/documents/{job_id}/download", headers={"X-Job-Token": r_token})
         assert dl.status_code == 200
         assert "officedocument.wordprocessingml.document" in dl.headers["content-type"]
         assert 'filename="contract.cleaned.docx"' in dl.headers["content-disposition"]
@@ -216,8 +240,11 @@ class TestApplyFeedbackEndpoint:
             "/api/v1/documents/",
             files={"file": ("doc.md", b"user@example.com", "text/markdown")},
         )
+
+        assert r.status_code == 202
+        r_token = r.json()["access_token"]
         job_id = r.json()["id"]
-        _wait_completed(client, job_id)
+        _wait_completed(client, job_id, r_token)
 
         payload = {
             "actions": [
@@ -232,7 +259,8 @@ class TestApplyFeedbackEndpoint:
             ],
             "comment": None,
         }
-        r2 = client.post(f"/api/v1/documents/{job_id}/apply-feedback", json=payload)
+        r2 = client.post(f"/api/v1/documents/{job_id}/apply-feedback", json=payload,
+            headers={"X-Job-Token": r_token})
         assert r2.status_code == 200
         body = r2.json()
         assert body["applied"] >= 0
@@ -246,8 +274,11 @@ class TestApplyFeedbackEndpoint:
             "/api/v1/documents/",
             files={"file": ("doc.md", b"user@example.com ", "text/markdown")},
         )
+
+        assert r.status_code == 202
+        r_token = r.json()["access_token"]
         job_id = r.json()["id"]
-        _wait_completed(client, job_id)
+        _wait_completed(client, job_id, r_token)
 
         # Add a new phone selecting the trailing space after the
         # email.  Source text is "user@example.com " (17 chars).
@@ -266,7 +297,8 @@ class TestApplyFeedbackEndpoint:
             ],
             "comment": None,
         }
-        r2 = client.post(f"/api/v1/documents/{job_id}/apply-feedback", json=payload)
+        r2 = client.post(f"/api/v1/documents/{job_id}/apply-feedback", json=payload,
+            headers={"X-Job-Token": r_token})
         assert r2.status_code == 200, r2.text
         body = r2.json()
         assert body["added"] == 1, body
@@ -284,8 +316,11 @@ class TestApplyFeedbackEndpoint:
             "/api/v1/documents/",
             files={"file": ("doc.md", b"user@example.com", "text/markdown")},
         )
+
+        assert r.status_code == 202
+        r_token = r.json()["access_token"]
         job_id = r.json()["id"]
-        _wait_completed(client, job_id)
+        _wait_completed(client, job_id, r_token)
 
         payload = {
             "actions": [
@@ -300,7 +335,8 @@ class TestApplyFeedbackEndpoint:
             ],
             "comment": None,
         }
-        r2 = client.post(f"/api/v1/documents/{job_id}/apply-feedback", json=payload)
+        r2 = client.post(f"/api/v1/documents/{job_id}/apply-feedback", json=payload,
+            headers={"X-Job-Token": r_token})
         assert r2.status_code == 200
         body = r2.json()
         assert body["rejected"] == 1
@@ -327,11 +363,15 @@ class TestApplyFeedbackEndpoint:
             "/api/v1/documents/",
             files={"file": ("doc.md", b"user@example.com", "text/markdown")},
         )
+
+        assert r.status_code == 202
+        r_token = r.json()["access_token"]
         job_id = r.json()["id"]
-        _wait_completed(client, job_id)
+        _wait_completed(client, job_id, r_token)
 
         payload = {"actions": [], "comment": "looks good"}
-        client.post(f"/api/v1/documents/{job_id}/apply-feedback", json=payload)
+        client.post(f"/api/v1/documents/{job_id}/apply-feedback", json=payload,
+            headers={"X-Job-Token": r_token})
 
         feedback_path = storage_dir / "jobs" / job_id / "feedback.json"
         assert feedback_path.is_file()
@@ -352,8 +392,11 @@ class TestApplyFeedbackEndpoint:
             files={"file": ("contract.docx", binary, "application/octet-stream")},
             data={"output_format": "md"},
         )
+
+        assert r.status_code == 202
+        r_token = r.json()["access_token"]
         job_id = r.json()["id"]
-        job = _wait_completed(client, job_id)
+        job = _wait_completed(client, job_id, r_token)
         assert job["status"] == "completed"
         assert job["output_ext"] == "md"
 
@@ -371,7 +414,8 @@ class TestApplyFeedbackEndpoint:
             ],
             "comment": None,
         }
-        r2 = client.post(f"/api/v1/documents/{job_id}/apply-feedback", json=payload)
+        r2 = client.post(f"/api/v1/documents/{job_id}/apply-feedback", json=payload,
+            headers={"X-Job-Token": r_token})
         assert r2.status_code == 200
         assert r2.json()["output_ext"] == "md"
 
@@ -394,8 +438,11 @@ class TestApplyFeedbackEndpoint:
             "/api/v1/documents/",
             files={"file": ("doc.md", b"user@example.com ", "text/markdown")},
         )
+
+        assert r.status_code == 202
+        r_token = r.json()["access_token"]
         job_id = r.json()["id"]
-        _wait_completed(client, job_id)
+        _wait_completed(client, job_id, r_token)
 
         payload = {
             "actions": [
@@ -409,13 +456,15 @@ class TestApplyFeedbackEndpoint:
             ],
             "comment": None,
         }
-        r1 = client.post(f"/api/v1/documents/{job_id}/apply-feedback", json=payload)
+        r1 = client.post(f"/api/v1/documents/{job_id}/apply-feedback", json=payload,
+            headers={"X-Job-Token": r_token})
         assert r1.status_code == 200
         result_path = storage_dir / "jobs" / job_id / "result.md"
         first = result_path.read_text(encoding="utf-8")
         assert "<PRIVATE_PHONE1>" in first
 
-        r2 = client.post(f"/api/v1/documents/{job_id}/apply-feedback", json=payload)
+        r2 = client.post(f"/api/v1/documents/{job_id}/apply-feedback", json=payload,
+            headers={"X-Job-Token": r_token})
         assert r2.status_code == 200
         second = result_path.read_text(encoding="utf-8")
         assert second == first  # no second rewrite
@@ -439,8 +488,11 @@ class TestApplyFeedbackTrainingDataset:
             "/api/v1/documents/",
             files={"file": ("doc.md", b"user@example.com", "text/markdown")},
         )
+
+        assert r.status_code == 202
+        r_token = r.json()["access_token"]
         job_id = r.json()["id"]
-        _wait_completed(client, job_id)
+        _wait_completed(client, job_id, r_token)
 
         # Add a new placeholder for a phone (offset 14..16 maps to
         # plain "om" text in the original source).
@@ -456,7 +508,8 @@ class TestApplyFeedbackTrainingDataset:
             ],
             "comment": None,
         }
-        r2 = client.post(f"/api/v1/documents/{job_id}/apply-feedback", json=payload)
+        r2 = client.post(f"/api/v1/documents/{job_id}/apply-feedback", json=payload,
+            headers={"X-Job-Token": r_token})
         assert r2.status_code == 200
         body = r2.json()
         assert body["training_records_added"] == 1
@@ -478,8 +531,11 @@ class TestApplyFeedbackTrainingDataset:
             "/api/v1/documents/",
             files={"file": ("doc.md", b"user@example.com", "text/markdown")},
         )
+
+        assert r.status_code == 202
+        r_token = r.json()["access_token"]
         job_id = r.json()["id"]
-        _wait_completed(client, job_id)
+        _wait_completed(client, job_id, r_token)
 
         payload = {
             "actions": [
@@ -494,7 +550,8 @@ class TestApplyFeedbackTrainingDataset:
             ],
             "comment": None,
         }
-        r2 = client.post(f"/api/v1/documents/{job_id}/apply-feedback", json=payload)
+        r2 = client.post(f"/api/v1/documents/{job_id}/apply-feedback", json=payload,
+            headers={"X-Job-Token": r_token})
         assert r2.status_code == 200
         body = r2.json()
         # Reject does not add new training signal — the counter is 0.
@@ -512,21 +569,25 @@ class TestApplyFeedbackTrainingDataset:
         self, client_and_storage: tuple[TestClient, Path]
     ) -> None:
         client, storage_dir = client_and_storage
-        first_job = client.post(
+        first_resp = client.post(
             "/api/v1/documents/",
             files={"file": ("a.md", b"user@example.com", "text/markdown")},
-        ).json()["id"]
-        _wait_completed(client, first_job)
+        )
+        first_job = first_resp.json()["id"]
+        first_token = first_resp.json()["access_token"]
+        _wait_completed(client, first_job, first_token)
 
-        second_job = client.post(
+        second_resp = client.post(
             "/api/v1/documents/",
             files={"file": ("b.md", b"admin@example.org", "text/markdown")},
-        ).json()["id"]
-        _wait_completed(client, second_job)
+        )
+        second_job = second_resp.json()["id"]
+        second_token = second_resp.json()["access_token"]
+        _wait_completed(client, second_job, second_token)
 
-        for job_id, target in [
-            (first_job, "user@example.com"),
-            (second_job, "admin@example.org"),
+        for job_id, job_token, target in [
+            (first_job, first_token, "user@example.com"),
+            (second_job, second_token, "admin@example.org"),
         ]:
             payload = {
                 "actions": [
@@ -540,7 +601,8 @@ class TestApplyFeedbackTrainingDataset:
                 ],
                 "comment": None,
             }
-            client.post(f"/api/v1/documents/{job_id}/apply-feedback", json=payload)
+            client.post(f"/api/v1/documents/{job_id}/apply-feedback", json=payload,
+                        headers={"X-Job-Token": job_token})
 
         # The cumulative JSONL must contain both records, in order.
         dataset_path = storage_dir / "checkpoints" / "training_dataset.jsonl"
@@ -562,8 +624,11 @@ class TestApplyFeedbackTrainingDataset:
             "/api/v1/documents/",
             files={"file": ("doc.md", b"user@example.com", "text/markdown")},
         )
+
+        assert r.status_code == 202
+        r_token = r.json()["access_token"]
         job_id = r.json()["id"]
-        _wait_completed(client, job_id)
+        _wait_completed(client, job_id, r_token)
 
         # Send a no-op confirm-only feedback.
         payload = {
@@ -579,7 +644,8 @@ class TestApplyFeedbackTrainingDataset:
             ],
             "comment": None,
         }
-        r2 = client.post(f"/api/v1/documents/{job_id}/apply-feedback", json=payload)
+        r2 = client.post(f"/api/v1/documents/{job_id}/apply-feedback", json=payload,
+            headers={"X-Job-Token": r_token})
         body = r2.json()
         assert body["training_records_added"] == 0
 
@@ -595,8 +661,11 @@ class TestApplyFeedbackOverlapValidation:
             "/api/v1/documents/",
             files={"file": ("doc.md", b"user@example.com plus text", "text/markdown")},
         )
+
+        assert r.status_code == 202
+        r_token = r.json()["access_token"]
         job_id = r.json()["id"]
-        _wait_completed(client, job_id)
+        _wait_completed(client, job_id, r_token)
 
         job_dir = storage_dir / "jobs" / job_id
         result_before = (job_dir / "result.md").read_text(encoding="utf-8")
@@ -620,7 +689,8 @@ class TestApplyFeedbackOverlapValidation:
             ],
             "comment": None,
         }
-        r2 = client.post(f"/api/v1/documents/{job_id}/apply-feedback", json=payload)
+        r2 = client.post(f"/api/v1/documents/{job_id}/apply-feedback", json=payload,
+            headers={"X-Job-Token": r_token})
         assert r2.status_code == 400, r2.text
         detail = r2.json()["detail"]
         assert detail["code"] == "overlapping_actions"
@@ -639,8 +709,11 @@ class TestApplyFeedbackOverlapValidation:
             "/api/v1/documents/",
             files={"file": ("doc.md", b"user@example.com aaa bbb", "text/markdown")},
         )
+
+        assert r.status_code == 202
+        r_token = r.json()["access_token"]
         job_id = r.json()["id"]
-        _wait_completed(client, job_id)
+        _wait_completed(client, job_id, r_token)
 
         payload = {
             "actions": [
@@ -661,7 +734,8 @@ class TestApplyFeedbackOverlapValidation:
             ],
             "comment": None,
         }
-        r2 = client.post(f"/api/v1/documents/{job_id}/apply-feedback", json=payload)
+        r2 = client.post(f"/api/v1/documents/{job_id}/apply-feedback", json=payload,
+            headers={"X-Job-Token": r_token})
         assert r2.status_code == 200, r2.text
         assert r2.json()["added"] == 2
 
@@ -677,8 +751,11 @@ class TestApplyFeedbackAlignmentMismatch:
             "/api/v1/documents/",
             files={"file": ("doc.md", b"a@b.com and c@d.com", "text/markdown")},
         )
+
+        assert r.status_code == 202
+        r_token = r.json()["access_token"]
         job_id = r.json()["id"]
-        _wait_completed(client, job_id)
+        _wait_completed(client, job_id, r_token)
 
         # Remove one annotation — two placeholders remain in result.md.
         ann_path = storage_dir / "jobs" / job_id / "annotations.json"
@@ -699,7 +776,8 @@ class TestApplyFeedbackAlignmentMismatch:
             ],
             "comment": None,
         }
-        r2 = client.post(f"/api/v1/documents/{job_id}/apply-feedback", json=payload)
+        r2 = client.post(f"/api/v1/documents/{job_id}/apply-feedback", json=payload,
+            headers={"X-Job-Token": r_token})
         assert r2.status_code == 409, r2.text
         assert r2.json()["detail"]["code"] == "alignment_mismatch"
         # feedback.json was rolled back; result.md untouched.

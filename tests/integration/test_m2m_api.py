@@ -21,6 +21,7 @@ import shutil
 import time
 from collections.abc import Generator
 from pathlib import Path
+from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
 import pytest
@@ -42,8 +43,14 @@ VALID_AUTH = {"Authorization": "Bearer test-key-1"}
 def _make_client(
     tmp_path: Path,
     api_keys: str,
+    base_url: str = "http://127.0.0.1:8000",
 ) -> Generator[tuple[TestClient, LocalStorage], None, None]:
-    """Build a TestClient with mock privacy and the given API key config."""
+    """Build a TestClient with mock privacy and the given API key config.
+
+    ``base_url`` defaults to a loopback host so headerless (UI) requests
+    satisfy the fail-closed loopback check in ``require_documents_auth``
+    (spec 007 FR-002/TD-001); pass a non-loopback URL to simulate
+    external clients."""
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
     storage = LocalStorage(storage_dir)
@@ -58,13 +65,23 @@ def _make_client(
     )
 
     app = create_app()
+    parsed_base_url = urlparse(base_url)
+
+    @app.middleware("http")
+    async def set_test_client_address(request, call_next):
+        """Make TestClient's static ``testclient`` peer match ``base_url``."""
+        host = parsed_base_url.hostname or ""
+        port = parsed_base_url.port or (443 if parsed_base_url.scheme == "https" else 80)
+        request.scope["client"] = (host, port)
+        return await call_next(request)
+
     app.dependency_overrides[get_settings] = lambda: real_settings
     app.dependency_overrides[get_storage] = lambda: storage
     app.dependency_overrides[get_privacy] = lambda: privacy
     # Keep the admin-UI middleware in sync with the overridden settings.
     app.state.settings = real_settings
 
-    with TestClient(app) as client:
+    with TestClient(app, base_url=base_url) as client:
         yield client, storage
 
     shutil.rmtree(storage_dir, ignore_errors=True)
@@ -81,6 +98,14 @@ def no_keys_client(tmp_path: Path) -> Generator[TestClient, None, None]:
     """Client with an empty ``api_keys`` — M2M disabled (NFR-004)."""
     for client, _storage in _make_client(tmp_path, ""):
         yield client
+
+
+@pytest.fixture
+def non_loopback_client(
+    tmp_path: Path,
+) -> Generator[tuple[TestClient, LocalStorage], None, None]:
+    """Client simulating an external (non-loopback) origin (spec 007 FR-001)."""
+    yield from _make_client(tmp_path, API_KEYS, base_url="http://10.0.0.5:8000")
 
 
 def _wait_for_completion(
@@ -101,8 +126,17 @@ def _wait_for_completion(
     raise AssertionError(f"job {job_id} did not complete within {max_wait_s}s")
 
 
-def _upload_md(client: TestClient, headers: dict[str, str] | None = None) -> str:
-    """Upload a small markdown file with an email in it; return the job id."""
+def _job_token_headers(token: str) -> dict[str, str]:
+    """X-Job-Token header for job-scoped follow-up requests (spec 007 T3)."""
+    return {"X-Job-Token": token}
+
+
+def _upload_md(client: TestClient, headers: dict[str, str] | None = None) -> tuple[str, str]:
+    """Upload a small markdown file with an email in it.
+
+    Returns ``(job_id, access_token)``; the raw token is returned only in
+    the creation response (spec 007 T3, TD-003).
+    """
     content = b"Reach me at user@example.com please."
     r = client.post(
         "/api/v1/documents/",
@@ -110,7 +144,10 @@ def _upload_md(client: TestClient, headers: dict[str, str] | None = None) -> str
         headers=headers,
     )
     assert r.status_code == 202, r.text
-    return r.json()["id"]
+    body = r.json()
+    token = body["access_token"]
+    assert isinstance(token, str) and token
+    return body["id"], token
 
 
 class TestM2MHappyPath:
@@ -118,14 +155,17 @@ class TestM2MHappyPath:
         self, client_and_storage: tuple[TestClient, LocalStorage]
     ) -> None:
         client, storage = client_and_storage
-        job_id = _upload_md(client, VALID_AUTH)
+        job_id, token = _upload_md(client, VALID_AUTH)
+        auth = {**VALID_AUTH, **_job_token_headers(token)}
 
-        job = _wait_for_completion(client, job_id, VALID_AUTH)
+        job = _wait_for_completion(client, job_id, auth)
         assert job["status"] == "completed", job
         assert job["id"] == job_id
+        # The status response must never echo the raw token (spec 007 T3).
+        assert "access_token" not in job
 
         # --- Binary download (no explicit Accept) -----------------------
-        binary = client.get(f"/api/v1/documents/{job_id}/download", headers=VALID_AUTH)
+        binary = client.get(f"/api/v1/documents/{job_id}/download", headers=auth)
         assert binary.status_code == 200, binary.text
         assert "text/markdown" in binary.headers["content-type"]
         assert 'filename="note.cleaned.md"' in binary.headers["content-disposition"]
@@ -137,7 +177,7 @@ class TestM2MHappyPath:
         # --- JSON download (Accept: application/json) -------------------
         json_resp = client.get(
             f"/api/v1/documents/{job_id}/download",
-            headers={**VALID_AUTH, "Accept": "application/json"},
+            headers={**auth, "Accept": "application/json"},
         )
         assert json_resp.status_code == 200, json_resp.text
         assert "application/json" in json_resp.headers["content-type"]
@@ -250,7 +290,7 @@ class TestM2MBearerPrecedence:
         # Log in to obtain a genuinely valid session cookie.
         login = client.post(
             "/login",
-            headers={"Origin": "http://testserver"},
+            headers={"Origin": "http://127.0.0.1:8000"},
             data={"username": TEST_USER, "password": TEST_PASSWORD},
             follow_redirects=False,
         )
@@ -268,8 +308,10 @@ class TestM2MBearerPrecedence:
         self, client_and_storage: tuple[TestClient, LocalStorage]
     ) -> None:
         client, _ = client_and_storage
-        job_id = _upload_md(client, VALID_AUTH)
-        job = _wait_for_completion(client, job_id, VALID_AUTH)
+        job_id, token = _upload_md(client, VALID_AUTH)
+        job = _wait_for_completion(
+            client, job_id, {**VALID_AUTH, **_job_token_headers(token)}
+        )
         assert job["status"] == "completed"
 
 
@@ -278,25 +320,29 @@ class TestDownloadContentNegotiation:
 
     def _completed_job(
         self, client_and_storage: tuple[TestClient, LocalStorage]
-    ) -> tuple[TestClient, LocalStorage, str]:
+    ) -> tuple[TestClient, LocalStorage, str, dict[str, str]]:
         client, storage = client_and_storage
-        job_id = _upload_md(client, VALID_AUTH)
-        job = _wait_for_completion(client, job_id, VALID_AUTH)
+        job_id, token = _upload_md(client, VALID_AUTH)
+        job = _wait_for_completion(
+            client, job_id, {**VALID_AUTH, **_job_token_headers(token)}
+        )
         assert job["status"] == "completed"
-        return client, storage, job_id
+        return client, storage, job_id, {**VALID_AUTH, **_job_token_headers(token)}
 
     @staticmethod
-    def _get_without_accept(client: TestClient, url: str) -> object:
+    def _get_without_accept(
+        client: TestClient, url: str, headers: dict[str, str] | None = None
+    ) -> object:
         """Send a request with the Accept header fully removed."""
-        request = client.build_request("GET", url, headers=VALID_AUTH)
+        request = client.build_request("GET", url, headers=headers or VALID_AUTH)
         request.headers.pop("accept", None)
         return client.send(request)
 
     def test_no_accept_header_returns_binary(
         self, client_and_storage: tuple[TestClient, LocalStorage]
     ) -> None:
-        client, storage, job_id = self._completed_job(client_and_storage)
-        r = self._get_without_accept(client, f"/api/v1/documents/{job_id}/download")
+        client, storage, job_id, auth = self._completed_job(client_and_storage)
+        r = self._get_without_accept(client, f"/api/v1/documents/{job_id}/download", auth)
         assert r.status_code == 200, r.text
         result_bytes = (storage.job_dir(UUID(job_id)) / "result.md").read_bytes()
         assert r.content == result_bytes
@@ -305,10 +351,10 @@ class TestDownloadContentNegotiation:
     def test_wildcard_accept_returns_binary(
         self, client_and_storage: tuple[TestClient, LocalStorage]
     ) -> None:
-        client, storage, job_id = self._completed_job(client_and_storage)
+        client, storage, job_id, auth = self._completed_job(client_and_storage)
         r = client.get(
             f"/api/v1/documents/{job_id}/download",
-            headers={**VALID_AUTH, "Accept": "*/*"},
+            headers={**auth, "Accept": "*/*"},
         )
         assert r.status_code == 200, r.text
         result_bytes = (storage.job_dir(UUID(job_id)) / "result.md").read_bytes()
@@ -318,10 +364,10 @@ class TestDownloadContentNegotiation:
         self, client_and_storage: tuple[TestClient, LocalStorage]
     ) -> None:
         """Exact match only — ``application/jsonx`` must NOT be JSON."""
-        client, storage, job_id = self._completed_job(client_and_storage)
+        client, storage, job_id, auth = self._completed_job(client_and_storage)
         r = client.get(
             f"/api/v1/documents/{job_id}/download",
-            headers={**VALID_AUTH, "Accept": "application/jsonx"},
+            headers={**auth, "Accept": "application/jsonx"},
         )
         assert r.status_code == 200, r.text
         result_bytes = (storage.job_dir(UUID(job_id)) / "result.md").read_bytes()
@@ -330,10 +376,10 @@ class TestDownloadContentNegotiation:
     def test_json_with_q_parameter_returns_json(
         self, client_and_storage: tuple[TestClient, LocalStorage]
     ) -> None:
-        client, _storage, job_id = self._completed_job(client_and_storage)
+        client, _storage, job_id, auth = self._completed_job(client_and_storage)
         r = client.get(
             f"/api/v1/documents/{job_id}/download",
-            headers={**VALID_AUTH, "Accept": "application/json; q=0.9"},
+            headers={**auth, "Accept": "application/json; q=0.9"},
         )
         assert r.status_code == 200, r.text
         body = r.json()
@@ -344,10 +390,10 @@ class TestDownloadContentNegotiation:
         self, client_and_storage: tuple[TestClient, LocalStorage]
     ) -> None:
         """``application/json, */*`` — the explicit entry wins."""
-        client, _storage, job_id = self._completed_job(client_and_storage)
+        client, _storage, job_id, auth = self._completed_job(client_and_storage)
         r = client.get(
             f"/api/v1/documents/{job_id}/download",
-            headers={**VALID_AUTH, "Accept": "application/json, */*"},
+            headers={**auth, "Accept": "application/json, */*"},
         )
         assert r.status_code == 200, r.text
         assert "content_base64" in r.json()
@@ -368,8 +414,18 @@ class TestM2MErrorContract:
         client, storage = client_and_storage
         job = Job(source_filename="note.md", source_ext="md", status=JobStatus.PENDING)
         storage.save_job(job)
+        # Spec 007 T3: the job token must also be presented; a pending job
+        # with a matching token still answers 409 job_not_ready.
+        from neironir.api.jobs import issue_job_access_token
 
-        r = client.get(f"/api/v1/documents/{job.id}/download", headers=VALID_AUTH)
+        raw_token, digest = issue_job_access_token()
+        job.access_token_digest = digest
+        storage.save_job(job)
+
+        r = client.get(
+            f"/api/v1/documents/{job.id}/download",
+            headers={**VALID_AUTH, **_job_token_headers(raw_token)},
+        )
         assert r.status_code == 409
         assert r.json()["detail"]["code"] == "job_not_ready"
 
@@ -405,6 +461,93 @@ class TestM2MErrorContract:
         assert r.status_code == 413
         assert r.json()["detail"]["code"] == "file_too_large"
 
+    def test_upload_over_cap_creates_no_job_dir(
+        self, client_and_storage: tuple[TestClient, LocalStorage]
+    ) -> None:
+        """T2 regression: an oversized upload must be rejected with 413
+        ``file_too_large`` BEFORE ``save_source`` runs, so no job
+        directory is created on disk."""
+        client, storage = client_and_storage
+        app = client.app
+        current = app.dependency_overrides[get_settings]()
+        assert isinstance(current, Settings)
+        app.dependency_overrides[get_settings] = lambda: current.model_copy(
+            update={"max_file_size": 16}
+        )
+
+        r = client.post(
+            "/api/v1/documents/",
+            files={"file": ("note.md", b"x" * 64, "text/markdown")},
+            headers=VALID_AUTH,
+        )
+        assert r.status_code == 413, r.text
+        assert r.json()["detail"]["code"] == "file_too_large"
+        # No job may have been persisted by the rejected upload.
+        assert not (storage.root / "jobs").exists() or not (storage.root / "jobs").iterdir()
+
+
+class TestT6JsonDownloadCap:
+    """T6: JSON (base64) download has a configurable cap with a stable 413
+    ``result_too_large`` error; binary download remains available above the
+    cap, and the JSON contract is unchanged below it."""
+
+    def test_json_download_over_cap_returns_413_result_too_large(
+        self, client_and_storage: tuple[TestClient, LocalStorage]
+    ) -> None:
+        client, storage = client_and_storage
+        app = client.app
+        current = app.dependency_overrides[get_settings]()
+        assert isinstance(current, Settings)
+        app.dependency_overrides[get_settings] = lambda: current.model_copy(
+            update={"max_json_download_size": 8}
+        )
+        job_id, token = _upload_md(client, VALID_AUTH)
+        auth = {**VALID_AUTH, **_job_token_headers(token)}
+        _wait_for_completion(client, job_id, auth)
+
+        r = client.get(
+            f"/api/v1/documents/{job_id}/download",
+            headers={**auth, "Accept": "application/json"},
+        )
+        assert r.status_code == 413, r.text
+        assert r.json()["detail"]["code"] == "result_too_large"
+
+    def test_json_download_under_cap_keeps_contract(
+        self, client_and_storage: tuple[TestClient, LocalStorage]
+    ) -> None:
+        client, _ = client_and_storage
+        job_id, token = _upload_md(client, VALID_AUTH)
+        auth = {**VALID_AUTH, **_job_token_headers(token)}
+        _wait_for_completion(client, job_id, auth)
+
+        r = client.get(
+            f"/api/v1/documents/{job_id}/download",
+            headers={**auth, "Accept": "application/json"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        decoded = base64.b64decode(body["content_base64"])
+        assert len(decoded) == body["size"]
+        assert decoded  # cleaned markdown is non-empty
+
+    def test_binary_download_still_works_above_json_cap(
+        self, client_and_storage: tuple[TestClient, LocalStorage]
+    ) -> None:
+        client, _ = client_and_storage
+        app = client.app
+        current = app.dependency_overrides[get_settings]()
+        assert isinstance(current, Settings)
+        app.dependency_overrides[get_settings] = lambda: current.model_copy(
+            update={"max_json_download_size": 8}
+        )
+        job_id, token = _upload_md(client, VALID_AUTH)
+        auth = {**VALID_AUTH, **_job_token_headers(token)}
+        _wait_for_completion(client, job_id, auth)
+
+        r = client.get(f"/api/v1/documents/{job_id}/download", headers=auth)
+        assert r.status_code == 200, r.text
+        assert len(r.content) > 0
+
 
 class TestM2MRegressionNoAuthorizationHeader:
     """FR-003/TD-007: requests without an Authorization header must keep
@@ -414,19 +557,26 @@ class TestM2MRegressionNoAuthorizationHeader:
         self, client_and_storage: tuple[TestClient, LocalStorage]
     ) -> None:
         client, _ = client_and_storage
-        job_id = _upload_md(client)  # no auth headers at all
-        job = _wait_for_completion(client, job_id)
+        # No Authorization header at all (loopback UI flow). The follow-up
+        # poll carries the one-time job access token from the creation
+        # response (spec 007 T3); the job-scoped guard is independent of
+        # the Bearer boundary and works for UI and M2M clients alike.
+        job_id, token = _upload_md(client)
+        job = _wait_for_completion(client, job_id, _job_token_headers(token))
         assert job["status"] == "completed"
 
     def test_download_without_authorization_still_binary(
         self, client_and_storage: tuple[TestClient, LocalStorage]
     ) -> None:
         client, _ = client_and_storage
-        job_id = _upload_md(client)
-        job = _wait_for_completion(client, job_id)
+        job_id, token = _upload_md(client)
+        job = _wait_for_completion(client, job_id, _job_token_headers(token))
         assert job["status"] == "completed"
 
-        r = client.get(f"/api/v1/documents/{job_id}/download")
+        r = client.get(
+            f"/api/v1/documents/{job_id}/download",
+            headers=_job_token_headers(token),
+        )
         assert r.status_code == 200, r.text
         assert "text/markdown" in r.headers["content-type"]
 
@@ -438,3 +588,130 @@ class TestM2MRegressionNoAuthorizationHeader:
         # Listing is not an endpoint — 405 is fine, what matters is that
         # it is NOT a 401 (auth never triggers without the header).
         assert r.status_code != 401
+
+
+class TestSpec007FailClosedLoopback:
+    """Spec 007 FR-001/FR-002 (TD-001): fail-closed documents auth.
+
+    Non-loopback clients without a valid Bearer API key must get 401;
+    invalid Bearer is rejected even on loopback (no session fallback).
+    """
+
+    def test_non_loopback_upload_without_authorization_returns_401(
+        self, non_loopback_client: tuple[TestClient, LocalStorage]
+    ) -> None:
+        client, _ = non_loopback_client
+        r = client.post(
+            "/api/v1/documents/",
+            files={"file": ("note.md", b"text", "text/markdown")},
+        )
+        assert r.status_code == 401, r.text
+        assert r.headers.get("www-authenticate") == "Bearer"
+        assert r.json()["detail"]["code"] == "invalid_api_key"
+
+    def test_non_loopback_get_without_authorization_returns_401(
+        self, non_loopback_client: tuple[TestClient, LocalStorage]
+    ) -> None:
+        client, _ = non_loopback_client
+        r = client.get(f"/api/v1/documents/{uuid4()}")
+        assert r.status_code == 401, r.text
+
+    def test_non_loopback_with_valid_bearer_still_works(
+        self, non_loopback_client: tuple[TestClient, LocalStorage]
+    ) -> None:
+        client, _ = non_loopback_client
+        job_id, token = _upload_md(client, VALID_AUTH)
+        job = _wait_for_completion(
+            client, job_id, {**VALID_AUTH, **_job_token_headers(token)}
+        )
+        assert job["status"] == "completed"
+
+    def test_loopback_invalid_bearer_returns_401(
+        self, client_and_storage: tuple[TestClient, LocalStorage]
+    ) -> None:
+        """FR-002: an invalid Bearer fails on loopback too — no fallback."""
+        client, _ = client_and_storage
+        r = client.post(
+            "/api/v1/documents/",
+            files={"file": ("note.md", b"text", "text/markdown")},
+            headers={"Authorization": "Bearer wrong-key"},
+        )
+        assert r.status_code == 401, r.text
+        assert r.json()["detail"]["code"] == "invalid_api_key"
+        assert "wrong-key" not in r.text
+
+
+class TestSpec007JobToken:
+    """Spec 007 T3: per-job opaque access token, Bearer boundary intact."""
+
+    def test_non_loopback_poll_without_job_token_returns_404(
+        self, non_loopback_client: tuple[TestClient, LocalStorage]
+    ) -> None:
+        client, _ = non_loopback_client
+        job_id, _token = _upload_md(client, VALID_AUTH)
+        # Bearer valid, job token missing — indistinguishable 404.
+        r = client.get(f"/api/v1/documents/{job_id}", headers=VALID_AUTH)
+        assert r.status_code == 404, r.text
+        assert r.json()["detail"]["code"] == "job_not_found"
+
+    def test_non_loopback_poll_with_valid_bearer_and_token(
+        self, non_loopback_client: tuple[TestClient, LocalStorage]
+    ) -> None:
+        client, _ = non_loopback_client
+        job_id, token = _upload_md(client, VALID_AUTH)
+        job = _wait_for_completion(
+            client, job_id, {**VALID_AUTH, **_job_token_headers(token)}
+        )
+        assert job["status"] == "completed"
+        assert job["id"] == job_id
+
+    def test_download_requires_job_token_even_with_valid_bearer(
+        self, non_loopback_client: tuple[TestClient, LocalStorage]
+    ) -> None:
+        client, _ = non_loopback_client
+        job_id, token = _upload_md(client, VALID_AUTH)
+        _wait_for_completion(
+            client, job_id, {**VALID_AUTH, **_job_token_headers(token)}
+        )
+
+        r = client.get(f"/api/v1/documents/{job_id}/download", headers=VALID_AUTH)
+        assert r.status_code == 404
+        assert r.json()["detail"]["code"] == "job_not_found"
+
+        ok = client.get(
+            f"/api/v1/documents/{job_id}/download",
+            headers={**VALID_AUTH, **_job_token_headers(token)},
+        )
+        assert ok.status_code == 200
+
+    def test_invalid_bearer_with_valid_job_token_still_401(
+        self, client_and_storage: tuple[TestClient, LocalStorage]
+    ) -> None:
+        """Bearer precedence (T1/TD-002) is preserved: an invalid Bearer
+        fails at the boundary even if a valid job token is presented."""
+        client, _ = client_and_storage
+        job_id, token = _upload_md(client, VALID_AUTH)
+        r = client.get(
+            f"/api/v1/documents/{job_id}",
+            headers={
+                "Authorization": "Bearer wrong-key",
+                **_job_token_headers(token),
+            },
+        )
+        assert r.status_code == 401, r.text
+        assert r.json()["detail"]["code"] == "invalid_api_key"
+
+    def test_raw_token_never_persisted_in_job_json(
+        self, client_and_storage: tuple[TestClient, LocalStorage]
+    ) -> None:
+        import json as _json
+
+        client, storage = client_and_storage
+        job_id, token = _upload_md(client, VALID_AUTH)
+        raw_file = (
+            storage.job_dir(UUID(job_id)) / "job.json"
+        ).read_text(encoding="utf-8")
+        assert token not in raw_file
+        data = _json.loads(raw_file)
+        assert data["access_token_digest"]
+        assert data["access_token_digest"] != token

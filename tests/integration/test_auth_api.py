@@ -136,6 +136,106 @@ class TestLogin:
         assert "neironir_csrf" in (set_cookie or "")
 
 
+class TestLogoutRevocation:
+    """T4: session revocation — old cookie is rejected after logout.
+
+    Uses a dedicated TestClient without the ``require_admin_auth``
+    dependency override so the real session-check code path is exercised.
+    """
+
+    @pytest.fixture
+    def real_client(self, tmp_path: Path) -> Generator[TestClient, None, None]:
+        """TestClient with real auth (no require_admin_auth override)."""
+        storage_dir = tmp_path / "storage-revoke"
+        storage_dir.mkdir()
+
+        storage = LocalStorage(storage_dir)
+        privacy = MockPrivacyFilterClient()
+        real_settings = Settings(
+            storage_dir=str(storage_dir),
+            session_secret=TEST_SECRET,
+            admin_user=TEST_USER,
+            admin_password=TEST_PASSWORD,
+        )
+
+        app = create_app()
+        app.dependency_overrides[get_settings] = lambda: real_settings
+        app.dependency_overrides[get_storage] = lambda: storage
+        app.dependency_overrides[get_privacy] = lambda: privacy
+        # Do NOT override require_admin_auth or verify_csrf
+        app.state.settings = real_settings
+
+        c = TestClient(app, headers={"Origin": "http://testserver"})
+        try:
+            yield c
+        finally:
+            c.close()
+
+    def _login(self, c: TestClient) -> tuple[str, str]:
+        r = c.post(
+            "/login",
+            data={"username": TEST_USER, "password": TEST_PASSWORD},
+            follow_redirects=False,
+        )
+        assert r.status_code in (302, 303)
+        session = c.cookies["neironir_session"]
+        csrf = c.cookies["neironir_csrf"]
+        assert session
+        return session, csrf
+
+    def _logout(self, c: TestClient, session: str, csrf: str) -> None:
+        r = c.post(
+            "/logout",
+            cookies={"neironir_session": session, "neironir_csrf": csrf},
+            headers={"X-CSRF-Token": csrf},
+            follow_redirects=False,
+        )
+        assert r.status_code in (302, 303)
+
+    def test_logout_revokes_old_session(self, real_client: TestClient) -> None:
+        """After logout, the old session cookie must return is_admin=False on whoami."""
+        session, csrf = self._login(real_client)
+        self._logout(real_client, session, csrf)
+
+        # Replay the old session cookie — whoami should say unauthenticated
+        r = real_client.get(
+            "/api/v1/auth/whoami",
+            cookies={"neironir_session": session, "neironir_csrf": csrf},
+        )
+        assert r.status_code == 200
+        assert r.json() == {"is_admin": False}
+
+    def test_new_session_after_logout_works(self, real_client: TestClient) -> None:
+        """After logout + re-login, the new session must be valid."""
+        old_session, old_csrf = self._login(real_client)
+        self._logout(real_client, old_session, old_csrf)
+
+        # New login
+        new_session, new_csrf = self._login(real_client)
+        assert new_session != old_session  # different jti
+
+        # New session should be valid
+        r = real_client.get(
+            "/api/v1/auth/whoami",
+            cookies={"neironir_session": new_session, "neironir_csrf": new_csrf},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["is_admin"] is True
+
+    def test_admin_endpoint_rejects_revoked_session(self, real_client: TestClient) -> None:
+        """Admin endpoints must reject a revoked session with 401."""
+        session, csrf = self._login(real_client)
+        self._logout(real_client, session, csrf)
+
+        # Replay the old session cookie on an admin endpoint
+        r = real_client.get(
+            "/api/v1/admin/stats",
+            cookies={"neironir_session": session},
+        )
+        assert r.status_code == 401
+
+
 class TestLoginNextRedirect:
     """Open-redirect protection for the ``?next=`` parameter (issue 3.2)."""
 

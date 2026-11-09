@@ -45,6 +45,7 @@ from typing import ClassVar
 
 from neironir.domain.entity_type import EntityType
 from neironir.privacy.client import EMAIL_PATTERN, PHONE_PATTERN, EntitySpan, overlaps
+from neironir.privacy.regex_guard import validate_dynamic_pattern
 
 logger = logging.getLogger(__name__)
 
@@ -226,6 +227,19 @@ class RuleBasedDetector:
             if not pattern_str or not entity_type_str:
                 continue
 
+            # ReDoS guard (spec 007, TD-004): unsafe persisted patterns
+            # (nested quantifiers, backreferences, over-long patterns)
+            # are skipped at load time. Only the rule id and the rejection
+            # reason are logged — never the pattern text or document content.
+            rejection = validate_dynamic_pattern(pattern_str)
+            if rejection is not None:
+                logger.warning(
+                    "dynamic rule %s: skipped unsafe regex (reason: %s)",
+                    fpath.stem,
+                    rejection.reason,
+                )
+                continue
+
             try:
                 entity_type = EntityType(entity_type_str)
             except ValueError:
@@ -236,9 +250,14 @@ class RuleBasedDetector:
 
             try:
                 pattern = re.compile(pattern_str)
-            except re.error as exc:
+            except re.error:
+                # A pattern that passed the syntactic safety policy above
+                # may still fail to compile (e.g. unbalanced brackets
+                # that did not trigger the quantifier scan). Skip it
+                # without logging the pattern source — only the rule id.
                 logger.warning(
-                    "dynamic rule %s: invalid regex %r — %s", fpath.stem, pattern_str, exc
+                    "dynamic rule %s: pattern does not compile — skipped",
+                    fpath.stem,
                 )
                 continue
 

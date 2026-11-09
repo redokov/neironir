@@ -24,9 +24,19 @@
   "source_ext": "docx",
   "created_at": "2025-07-27T10:15:23.123Z",
   "finished_at": null,
-  "error": null
+  "error": null,
+  "access_token": "vN2p...-opaque-random-token"
 }
 ```
+
+**`access_token`** — одноразовый opaque job access token (spec 007 T3). Выдаётся
+ровно один раз, в ответе на создание задачи, и нигде больше не повторляется.
+В `job.json` на сервере хранится только SHA-256 digest токена, сам токен не
+хранится и не логируется. Клиент обязан сохранить токен и передавать его в
+заголовке `X-Job-Token` на все запросы к конкретной задаче (статус, download,
+annotations, feedback, apply-feedback, preview), иначе ответ `404`.
+
+## Job access token (`X-Job-Token`)
 
 **Ошибки:**
 
@@ -35,11 +45,30 @@
 | `400` | Неподдерживаемое расширение |
 | `413` | Файл больше `MAX_FILE_SIZE` (по умолчанию 20 МБ) |
 
+Все job-scoped запросы (`GET /{job_id}`, `/download`, `/annotations`,
+`/feedback`, `/apply-feedback`, `/preview`) требуют заголовок
+`X-Job-Token: <токен из ответа на загрузку>` или валидную сессию администратора
+(явный bypass). Неверный токен, отсутствующий токен и legacy-задача без digest
+(создана до ввода токенов) для non-admin дают **одинаковый `404`**
+`job_not_found` — API не раскрывает, существует ли UUID.
+
+- Токен — opaque случайная строка (`secrets.token_urlsafe`); повторный запрос
+  с тем же токеном остаётся валидным до удаления задачи.
+- Потерянный токен не восстанавливается: единственный путь — пере загрузить
+  документ (admin может открыть legacy/забытую задачу через admin-сессию).
+- Для браузерного UI скачивание по ссылке `<a href>` передаёт токен query-
+  параметром `?access_token=...` на `/download` (заголовок в navigation не
+  поставить); сервер мапит этот параметр на ту же проверку.
+- Приоритет Bearer (M2M) сохраняется: невалидный `Authorization` даёт `401`
+  даже при валидном `X-Job-Token`.
+
 ## GET `/api/v1/documents/{job_id}`
 
 Получить статус задачи.
 
-**Ответ `200 OK`:** объект `Job` (как выше).
+Требует `X-Job-Token` (см. выше).
+
+**Ответ `200 OK`:** объект `Job` (как выше, **без** поля `access_token`).
 
 **Статусы:**
 
@@ -96,6 +125,11 @@ NEIRONIR_API_KEYS=key-prod-1, key-prod-2
 
 ### Правила доступа
 
+Два независимых уровня: (1) Bearer-граница для `Authorization` (ниже) и
+(2) per-job `X-Job-Token` на всех job-scoped маршрутах (см. [Job access token](#job-access-token-x-job-token)).
+Для M2M-клиента оба уровня обязательны на follow-up запросах: токен берётся
+из поля `access_token` в ответе `202` на upload.
+
 Поведение запросов к `/api/v1/documents*` определяется наличием заголовка
 `Authorization`:
 
@@ -132,7 +166,7 @@ guard'ом, но **вне M2M-контракта**: для машин они н�
 | `400` | `unsupported_format` | Файл не `.md`/`.docx` |
 | `400` | `unsupported_output_format` | `output_format` неизвестен или несовместим с источником |
 | `401` | `invalid_api_key` | Присутствующий `Authorization` не прошёл проверку; ответ содержит `WWW-Authenticate: Bearer` |
-| `404` | `job_not_found` | Задача не найдена |
+| `404` | `job_not_found` | Задача не найдена, `X-Job-Token` неверен/отсутствует, либо legacy-задача без digest (для non-admin) — ответы неразличимы |
 | `409` | `job_not_ready` | Download при статусе задачи ≠ `completed` |
 | `413` | `file_too_large` | Файл больше `NEIRONIR_MAX_FILE_SIZE` |
 
@@ -149,22 +183,25 @@ curl -s -X POST "$BASE/" \
   -H "Authorization: Bearer $KEY" \
   -F "file=@Договор.docx" \
   -F "output_format=md"
-# → 202 {"id": "…", "status": "pending", …}
+# → 202 {"id": "…", "status": "pending", "access_token": "…", …}
+# access_token возвращается только здесь; в ответе хранится только его digest.
 
 JOB_ID="<id из ответа>"
+JOB_TOKEN="<access_token из ответа>"   # одноразовый, вернуть его нельзя
 
 # 2. Опрос статуса: pending → processing → completed | failed
 #    Рекомендуемый интервал опроса — не менее 2 секунд; обработка может
 #    занимать до NEIRONIR_PRIVACY_FILTER_TIMEOUT (по умолчанию 600 с).
-curl -s -H "Authorization: Bearer $KEY" "$BASE/$JOB_ID"
+curl -s -H "Authorization: Bearer $KEY" -H "X-Job-Token: $JOB_TOKEN" "$BASE/$JOB_ID"
 # failed — терминальный статус, причина в поле error.
 
 # 3a. Скачать бинарный файл (по умолчанию — без Accept или с Accept: */*)
-curl -s -OJ -H "Authorization: Bearer $KEY" "$BASE/$JOB_ID/download"
+curl -s -OJ -H "Authorization: Bearer $KEY" -H "X-Job-Token: $JOB_TOKEN" \
+  "$BASE/$JOB_ID/download"
 
 # 3b. Скачать JSON с base64-контентом
-curl -s -H "Authorization: Bearer $KEY" -H "Accept: application/json" \
-  "$BASE/$JOB_ID/download"
+curl -s -H "Authorization: Bearer $KEY" -H "X-Job-Token: $JOB_TOKEN" \
+  -H "Accept: application/json" "$BASE/$JOB_ID/download"
 ```
 
 ### Выдача результата: два формата

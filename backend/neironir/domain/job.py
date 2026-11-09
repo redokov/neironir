@@ -20,7 +20,7 @@ from enum import Enum
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class JobStatus(str, Enum):  # noqa: UP042
@@ -58,6 +58,22 @@ class Job(BaseModel):
     # Human-readable note about processing details (e.g. fallback from
     # neural mode to mock mode).  Shown to the user in the job status UI.
     processing_note: str | None = None
+    # Spec 007 TD-003: SHA-256 hex digest of the job's opaque access token.
+    # The raw token is returned once in the creation response and is never
+    # stored or logged.  ``None`` for legacy jobs (no token issued), which
+    # are accessible to admin sessions only.
+    access_token_digest: str | None = None
+
+    @field_validator("access_token_digest")
+    @classmethod
+    def _validate_digest(cls, value: str | None) -> str | None:
+        """Ensure the stored value is a hex digest, never a raw token."""
+        if value is None:
+            return None
+        if not isinstance(value, str) or len(value) != 64:
+            raise ValueError("access_token_digest must be a 64-char hex string")
+        int(value, 16)  # raises ValueError for non-hex
+        return value
 
     @property
     def effective_output_ext(self) -> Literal["md", "docx"]:

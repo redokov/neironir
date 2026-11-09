@@ -27,6 +27,13 @@ class Settings(BaseSettings):
     port: int = 8000
     storage_dir: str = "./storage"
     max_file_size: int = 20971520
+    # Cap for the JSON (base64) representation of a cleaned file in
+    # ``GET /{job_id}/download`` (spec 007 T6).  The on-disk result size
+    # is checked *before* the file is read into memory, so an over-cap
+    # result answers a stable 413 ``result_too_large`` instead of
+    # materialising the whole file plus its ~33% base64 inflation.
+    # The binary download path is NOT capped by this value.
+    max_json_download_size: int = 5242880  # 5 MiB, env: NEIRONIR_MAX_JSON_DOWNLOAD_SIZE
     privacy_filter_cmd: str = ".venv-opf/Scripts/opf.exe"
     privacy_filter_timeout: int = 600
     privacy_filter_mode: str = "combined"

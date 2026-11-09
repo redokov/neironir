@@ -43,7 +43,13 @@ from neironir.auth.dependencies import (
     require_admin_auth,
     verify_csrf,
 )
-from neironir.auth.session import SESSION_PAYLOAD_KEY, sign_session_cookie
+from neironir.auth.session import (
+    JTI_PAYLOAD_KEY,
+    SESSION_PAYLOAD_KEY,
+    new_session_jti,
+    revoke_session_jti,
+    sign_session_cookie,
+)
 from neironir.config import Settings
 
 logger = logging.getLogger(__name__)
@@ -78,6 +84,7 @@ def _set_auth_cookies(
             SESSION_PAYLOAD_KEY: True,
             "csrf_sid": csrf_sid,
             "user": settings.admin_user,
+            JTI_PAYLOAD_KEY: new_session_jti(),
         },
         secret=settings.session_secret,
     )
@@ -102,8 +109,38 @@ def _set_auth_cookies(
     )
 
 
-def _clear_auth_cookies(response: Response, settings: Settings) -> None:
-    """Drop both cookies (used by ``/logout``)."""
+def _clear_auth_cookies(
+    response: Response,
+    request: Request,
+    settings: Settings,
+) -> None:
+    """Revoke the session and drop both cookies (used by ``/logout``).
+
+    The revocation is registered *before* the cookies are cleared so
+    that the old cookie value cannot be replayed after logout
+    (spec 007 FR-005 / design §4).
+    """
+    # Revoke the jti from the current session cookie, if present.
+    raw = request.cookies.get(settings.session_cookie_name)
+    if raw:
+        from neironir.auth.session import (
+            SessionExpiredError,
+            SessionInvalidError,
+            read_session_cookie,
+        )
+        try:
+            payload = read_session_cookie(
+                raw,
+                secret=settings.session_secret,
+                max_age=settings.session_max_age,
+            )
+            jti = payload.get(JTI_PAYLOAD_KEY)
+            if jti:
+                revoke_session_jti(jti, ttl=settings.session_max_age)
+        except (SessionExpiredError, SessionInvalidError):
+            # Cookie is invalid/expired — nothing to revoke.
+            pass
+
     response.delete_cookie(settings.session_cookie_name, path="/")
     response.delete_cookie(settings.csrf_cookie_name, path="/")
 
@@ -260,11 +297,17 @@ async def post_login(
     include_in_schema=False,
 )
 async def post_logout(
+    request: Request,
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> Response:
-    """Clear cookies and bounce back to ``/login``."""
+    """Revoke the session and clear cookies, then bounce back to ``/login``.
+
+    The jti revocation is registered *before* the cookies are cleared
+    so the old session cookie cannot be replayed after logout
+    (spec 007 FR-005 / design §4).
+    """
     response = RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
-    _clear_auth_cookies(response, settings)
+    _clear_auth_cookies(response, request, settings)
     return response
 
 

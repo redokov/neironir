@@ -5,10 +5,14 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Generator
+from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 from neironir.api import dependencies as dep
 from neironir.api import dependencies as deps
+from neironir.auth.dependencies import is_loopback_client, require_documents_auth
+from neironir.config import Settings
 from neironir.privacy.client import MockPrivacyFilterClient, SubprocessPrivacyFilterClient
 from neironir.privacy.combined import CombinedPrivacyClient
 from neironir.privacy.rules import RuleBasedDetector
@@ -91,3 +95,127 @@ class TestSubprocessProbe:
         # Second call returns the cache without probing again.
         monkeypatch.setattr(dep, "_probe_coro", None)  # type: ignore[arg-type]
         assert dep._probe_subprocess() is first
+
+
+class TestIsLoopbackClient:
+    """Spec 007 TD-001: ``is_loopback_client`` fail-closed classification.
+
+    Only ``request.client`` is consulted (no ``X-Forwarded-*``); anything
+    missing, empty, or unparseable is non-loopback.
+    """
+
+    @staticmethod
+    def _request_with_client(client: Any) -> MagicMock:
+        request = MagicMock()
+        request.client = client
+        return request
+
+    def _client(self, host: str) -> MagicMock:
+        c = MagicMock()
+        c.host = host
+        return c
+
+    def test_127_0_0_1_is_loopback(self) -> None:
+        assert is_loopback_client(self._request_with_client(self._client("127.0.0.1"))) is True
+
+    def test_ipv6_loopback_is_loopback(self) -> None:
+        assert is_loopback_client(self._request_with_client(self._client("::1"))) is True
+
+    def test_other_local_address_is_not_loopback(self) -> None:
+        assert is_loopback_client(self._request_with_client(self._client("10.0.0.5"))) is False
+
+    def test_missing_client_is_non_loopback(self) -> None:
+        assert is_loopback_client(self._request_with_client(None)) is False
+
+    def test_empty_host_is_non_loopback(self) -> None:
+        assert is_loopback_client(self._request_with_client(self._client(""))) is False
+
+    def test_unparseable_host_is_non_loopback(self) -> None:
+        assert is_loopback_client(self._request_with_client(self._client("testclient"))) is False
+
+    def test_no_client_attr_is_non_loopback(self) -> None:
+        request = MagicMock()
+        del request.client
+        assert is_loopback_client(request) is False
+
+
+class _FakeHeaders:
+    """Minimal stand-in for ``Request.headers`` (case-insensitive .get)."""
+
+    def __init__(self, mapping: dict[str, str]) -> None:
+        self._mapping = mapping
+
+    def get(self, key: str, default: str | None = None) -> str | None:
+        return self._mapping.get(key, default)
+
+
+class TestRequireDocumentsAuthFailClosed:
+    """Spec 007 FR-001/FR-002/FR-003: auth guard precedence at unit level."""
+
+    def _settings(self, api_keys: str = "key-1") -> Settings:
+        return Settings(
+            storage_dir="/tmp/none",
+            session_secret="secret",
+            admin_user="admin",
+            admin_password="pass",
+            api_keys=api_keys,
+        )
+
+    def _client(self, host: str) -> MagicMock:
+        c = MagicMock()
+        c.host = host
+        return c
+
+    def _request(
+        self,
+        host: str,
+        authorization: str | None,
+        method: str = "GET",
+    ) -> MagicMock:
+        request = MagicMock()
+        request.client = self._client(host)
+        request.method = method
+        header: dict[str, str] = {"authorization": authorization} if authorization else {}
+        request.headers = _FakeHeaders(header)
+        request.state = MagicMock()
+        return request
+
+    def test_loopback_without_header_passes(self) -> None:
+        request = self._request("127.0.0.1", None)
+        require_documents_auth(request, self._settings())  # no raise
+
+    def test_non_loopback_without_header_raises_401(self) -> None:
+        request = self._request("10.0.0.5", None)
+        try:
+            require_documents_auth(request, self._settings())
+        except Exception as exc:
+            assert exc.status_code == 401
+        else:
+            raise AssertionError("expected 401")
+
+    def test_non_loopback_missing_client_raises_401(self) -> None:
+        request = MagicMock()
+        request.client = None
+        request.headers = _FakeHeaders({})
+        request.method = "GET"
+        request.state = MagicMock()
+        try:
+            require_documents_auth(request, self._settings())
+        except Exception as exc:
+            assert exc.status_code == 401
+        else:
+            raise AssertionError("expected 401")
+
+    def test_loopback_invalid_bearer_raises_401(self) -> None:
+        request = self._request("127.0.0.1", "Bearer wrong")
+        try:
+            require_documents_auth(request, self._settings())
+        except Exception as exc:
+            assert exc.status_code == 401
+        else:
+            raise AssertionError("expected 401")
+
+    def test_valid_bearer_passes_and_marks_auth_via(self) -> None:
+        request = self._request("10.0.0.5", "Bearer key-1")
+        require_documents_auth(request, self._settings())
+        assert request.state.auth_via == "api_key"

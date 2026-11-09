@@ -10,6 +10,7 @@ from __future__ import annotations
 import shutil
 from collections.abc import Generator
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -17,6 +18,35 @@ from neironir.api.dependencies import get_privacy, get_storage
 from neironir.main import create_app
 from neironir.privacy.client import MockPrivacyFilterClient
 from neironir.storage.local import LocalStorage
+
+# Spec 007 T3: the client-side flow must present the one-time job access
+# token (returned only in the creation response) on every follow-up call.
+# The follow-up headers are built from that exact token, never a constant.
+
+
+def _upload(
+    client: TestClient, filename: str, content: bytes
+) -> tuple[str, str, dict[str, Any]]:
+    """Upload a file and return ``(job_id, access_token, creation_body)``."""
+    response = client.post(
+        "/api/v1/documents/",
+        files={"file": (filename, content, "text/markdown")},
+    )
+    assert response.status_code == 202
+    body = response.json()
+    assert body.get("access_token"), "upload response must carry the one-time access token"
+    return body["id"], body["access_token"], body
+
+
+def job_headers(token: str) -> dict[str, str]:
+    """Build the ``X-Job-Token`` headers for follow-up calls from ``token``."""
+    return {"X-Job-Token": token}
+
+
+async def _loopback_peer(request, call_next):
+    """Patch TestClient's synthetic peer to loopback (spec 007 TD-001)."""
+    request.scope["client"] = ("127.0.0.1", 80)
+    return await call_next(request)
 
 
 @pytest.fixture
@@ -28,6 +58,7 @@ def client_and_storage(tmp_path: Path) -> Generator[tuple[TestClient, LocalStora
     privacy = MockPrivacyFilterClient()
 
     app = create_app()
+    app.middleware("http")(_loopback_peer)
     app.dependency_overrides[get_storage] = lambda: storage
     app.dependency_overrides[get_privacy] = lambda: privacy
 
@@ -50,14 +81,11 @@ def test_e2e_markdown_upload_poll_download(
         "Site: https://example.com/page\n"
     )
 
-    # 1. Upload
-    upload_response = client.post(
-        "/api/v1/documents/",
-        files={"file": ("notes.md", source_text.encode("utf-8"), "text/markdown")},
-    )
-    assert upload_response.status_code == 202
-    job = upload_response.json()
-    job_id = job["id"]
+    # 1. Upload (the 202 creation response is the only place that
+    # carries source metadata and the one-time access token).
+    job_id, token, job = _upload(client, "notes.md", source_text.encode("utf-8"))
+    assert token, "upload must return a one-time access token"
+    headers = job_headers(token)
     assert job["source_filename"] == "notes.md"
     assert job["source_ext"] == "md"
 
@@ -65,7 +93,7 @@ def test_e2e_markdown_upload_poll_download(
     # synchronous, so a few iterations are plenty.
     final_status: str | None = None
     for _ in range(20):
-        status_response = client.get(f"/api/v1/documents/{job_id}")
+        status_response = client.get(f"/api/v1/documents/{job_id}", headers=headers)
         assert status_response.status_code == 200
         final_status = status_response.json()["status"]
         if final_status in {"completed", "failed"}:
@@ -73,7 +101,9 @@ def test_e2e_markdown_upload_poll_download(
     assert final_status == "completed"
 
     # 3. Download
-    download_response = client.get(f"/api/v1/documents/{job_id}/download")
+    download_response = client.get(
+        f"/api/v1/documents/{job_id}/download", headers=headers
+    )
     assert download_response.status_code == 200
     cleaned = download_response.content.decode("utf-8")
 
@@ -104,21 +134,19 @@ def test_e2e_markdown_without_sensitive_data_round_trips(
     source_text = "# Hello\n\nJust a plain markdown document, no PII here.\n"
     source_paragraphs = ["# Hello", "", "Just a plain markdown document, no PII here."]
 
-    upload_response = client.post(
-        "/api/v1/documents/",
-        files={"file": ("hello.md", source_text.encode("utf-8"), "text/markdown")},
-    )
-    assert upload_response.status_code == 202
-    job_id = upload_response.json()["id"]
+    job_id, token, _job = _upload(client, "hello.md", source_text.encode("utf-8"))
+    headers = job_headers(token)
 
     # Poll for completion
     for _ in range(20):
-        status_response = client.get(f"/api/v1/documents/{job_id}")
+        status_response = client.get(f"/api/v1/documents/{job_id}", headers=headers)
         if status_response.json()["status"] in {"completed", "failed"}:
             break
     assert status_response.json()["status"] == "completed"
 
-    download_response = client.get(f"/api/v1/documents/{job_id}/download")
+    download_response = client.get(
+        f"/api/v1/documents/{job_id}/download", headers=headers
+    )
     assert download_response.status_code == 200
     cleaned = download_response.content.decode("utf-8")
     assert "<PRIVATE" not in cleaned

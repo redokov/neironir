@@ -20,7 +20,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _free_port() -> int:
@@ -126,11 +126,18 @@ class TestSubprocessFallback:
             timeout=30,
         )
         assert r.status_code == 202
-        job_id = r.json()["id"]
+        uploaded = r.json()
+        job_id = uploaded["id"]
+        token = uploaded.get("access_token")
+        assert token, "upload response must carry the one-time job access token"
 
         # Poll for completion (should be fast since mock is fast).
         for _ in range(60):
-            r = httpx.get(f"{live_server}/api/v1/documents/{job_id}", timeout=5)
+            r = httpx.get(
+                f"{live_server}/api/v1/documents/{job_id}",
+                headers={"X-Job-Token": token},
+                timeout=5,
+            )
             job = r.json()
             if job["status"] in ("completed", "failed"):
                 break
@@ -150,7 +157,11 @@ class TestSubprocessFallback:
             f"processing_note should mention mock fallback, got: {job['processing_note']}"
         )
         # The result should still contain the mock-discovered placeholder.
-        r = httpx.get(f"{live_server}/api/v1/documents/{job_id}/download", timeout=5)
+        r = httpx.get(
+            f"{live_server}/api/v1/documents/{job_id}/download",
+            headers={"X-Job-Token": token},
+            timeout=5,
+        )
         assert r.status_code == 200
         assert "<PRIVATE_EMAIL1>" in r.text, (
             "mock-detected email placeholder should be in the result"

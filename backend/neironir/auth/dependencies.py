@@ -18,6 +18,7 @@ needs both can list them in the ``dependencies=[...]`` argument of
 
 from __future__ import annotations
 
+import ipaddress
 from typing import Annotated, Any
 
 from fastapi import Depends, HTTPException, Request, status
@@ -26,9 +27,11 @@ from neironir.api.dependencies import get_settings  # re-used
 from neironir.auth.api_key import get_bearer_token, is_valid_api_key
 from neironir.auth.csrf import verify_csrf_token
 from neironir.auth.session import (
+    JTI_PAYLOAD_KEY,
     SESSION_PAYLOAD_KEY,
     SessionExpiredError,
     SessionInvalidError,
+    is_jti_revoked,
     read_session_cookie,
 )
 from neironir.config import Settings
@@ -84,11 +87,19 @@ def get_session_payload(
     if not raw:
         return None
     try:
-        return read_session_cookie(
+        payload = read_session_cookie(
             raw, secret=settings.session_secret, max_age=settings.session_max_age
         )
     except (SessionExpiredError, SessionInvalidError):
         return None
+    # Reject revoked sessions (spec 007 FR-005 / design §4).
+    # Old cookies without a jti are still readable during the migration
+    # window; new logouts always work because every new session carries
+    # a jti and logout revokes it before clearing cookies.
+    jti = payload.get(JTI_PAYLOAD_KEY)
+    if jti and is_jti_revoked(jti):
+        return None
+    return payload
 
 
 def require_admin_auth(
@@ -115,24 +126,61 @@ def require_admin_auth(
     if not payload.get(SESSION_PAYLOAD_KEY):
         raise _unauthorized("admin session is not authorised")
 
+    # Reject revoked sessions (spec 007 FR-005 / design §4).
+    jti = payload.get(JTI_PAYLOAD_KEY)
+    if jti and is_jti_revoked(jti):
+        raise _unauthorized("admin session has been revoked")
+
     return payload
+
+
+def is_loopback_client(request: Request) -> bool:
+    """Classify the client address as loopback (TD-001, spec 007 §8).
+
+    Only the direct ``request.client`` address is trusted — ``X-Forwarded-*``
+    headers are explicitly NOT consulted. A missing client (``request.client
+    is None``), an empty or unparseable host, or a non-loopback address all
+    yield ``False`` (fail-closed).
+    """
+    try:
+        client = request.client
+    except AttributeError:
+        return False
+    if client is None:
+        return False
+    try:
+        host = client.host
+    except (AttributeError, TypeError):
+        return False
+    if not host:
+        return False
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def require_documents_auth(
     request: Request,
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> None:
-    """Validate the Bearer API key IF an Authorization header is present.
+    """Validate access to the documents API (fail-closed, spec 007 FR-001/FR-002).
 
     Precedence (Q2/TD-002): a present Authorization header ALWAYS takes
-    the API-key path — the session cookie is never consulted as a
-    fallback, so an invalid Bearer fails even with a valid session.
+    the API-key path — an invalid Bearer fails even with a valid session
+    cookie and never falls back to the anonymous flow.
 
-    No Authorization header → pass-through (existing UI/local
-    behaviour, FR-003). 403 is never used here (TD-001). The key
+    No Authorization header is allowed ONLY for loopback clients (local
+    browser UI, FR-002). Non-loopback clients without a valid Bearer get
+    401 (FR-001); a missing ``request.client`` is treated as non-loopback
+    (design §8, fail-closed). 403 is never used here (TD-001). The key
     value never appears in messages, logs or responses (NFR-001).
     """
     if request.headers.get("authorization") is None:
+        if not is_loopback_client(request):
+            raise _api_key_unauthorized(
+                "Authorization header with a valid Bearer API key is required."
+            )
         return
 
     token = get_bearer_token(request)
@@ -193,6 +241,10 @@ def _csrf_sid_from_session(request: Request, settings: Settings) -> str | None:
             raw, secret=settings.session_secret, max_age=settings.session_max_age
         )
     except (SessionExpiredError, SessionInvalidError):
+        return None
+    # If the session has been revoked, return None to force CSRF failure.
+    jti = payload.get(JTI_PAYLOAD_KEY)
+    if jti and is_jti_revoked(jti):
         return None
     return payload.get("csrf_sid")
 

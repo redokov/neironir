@@ -161,7 +161,7 @@ def test_app_no_stale_annotations_refetch() -> None:
     # T11: the fetch uses a captured myJobId snapshot instead of the live
     # currentJobId, so a late response cannot target a newer job.
     ann_fetches = re.findall(
-        r'fetch\("/api/v1/documents/" \+ (?:currentJobId|myJobId) \+ "/annotations"\)', src
+        r'fetch\("/api/v1/documents/" \+ (?:currentJobId|myJobId) \+ "/annotations"[^;]*', src
     )
     assert len(ann_fetches) == 1, (
         f"expected exactly 1 annotations fetch (openReview), got {len(ann_fetches)}"
@@ -188,6 +188,32 @@ def test_upload_race_guard_present() -> None:
     assign_idx = src.index("currentJobId = job.id")
     guard_idx = src.rindex("myUpload !== uploadSeq", 0, assign_idx)
     assert guard_idx > src.index("var myUpload = ++uploadSeq")
+
+
+def test_render_preview_normalizes_malformed_spans() -> None:
+    """T6: renderPreview must clamp/drop negative, out-of-range, reversed and
+    overlapping spans before rendering.  Malformed spans must never throw or
+    inject HTML: the function keeps using text nodes / textContent only, and
+    the filter runs on the sorted span list right before the render loop."""
+    src = _app_source()
+    fn_start = src.index("function renderPreview()")
+    fn_end = src.index("function toggleReject(", fn_start)
+    body = src[fn_start:fn_end]
+    # The filter must exist and guard the documented malformed cases.
+    assert "Number.isInteger" in body, "offsets are not validated as integers"
+    assert "text.length" in body, "spans are not clamped against text length"
+    # Out-of-range (fully before/after the text) and reversed spans are dropped.
+    assert "e < 0" in body, "negative end not handled"
+    assert "e < s" in body, "reversed spans are not dropped"
+    # Overlap guard: a span starting inside the previously kept span is dropped.
+    assert "cursor" in body, "no overlap cursor in renderPreview"
+    assert "s < cursor" in body, "overlapping spans are not dropped"
+    # The render loop must iterate the filtered list, not the raw one.
+    assert "validSpans.forEach" in body, "render loop does not use the filtered span list"
+    # No HTML injection: innerHTML must never be assigned inside renderPreview.
+    assert "innerHTML" not in body, "renderPreview must not assign innerHTML"
+    # textContent is still the only element-content assignment (escape-safe).
+    assert "textContent" in body
 
 
 def test_open_review_race_guard() -> None:

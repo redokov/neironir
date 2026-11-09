@@ -21,6 +21,26 @@ from neironir.privacy.client import MockPrivacyFilterClient
 from neironir.storage.local import LocalStorage
 
 
+# Spec 007 T3: every follow-up call after upload must present the one-time
+# job access token returned in the creation response.
+def _upload(client: TestClient, filename: str, body: bytes) -> tuple[str, str]:
+    """Upload a file and return ``(job_id, access_token)``."""
+    response = client.post(
+        "/api/v1/documents/",
+        files={"file": (filename, body, "text/markdown")},
+    )
+    assert response.status_code == 202
+    payload = response.json()
+    assert payload.get("access_token"), "upload response must carry the one-time access token"
+    return payload["id"], payload["access_token"]
+
+
+async def _loopback_peer(request, call_next):
+    """Patch TestClient's synthetic peer to loopback (spec 007 TD-001)."""
+    request.scope["client"] = ("127.0.0.1", 80)
+    return await call_next(request)
+
+
 @pytest.fixture
 def client_and_storage(tmp_path: Path) -> Generator[tuple[TestClient, LocalStorage], None, None]:
     storage_dir = tmp_path / "storage"
@@ -29,6 +49,7 @@ def client_and_storage(tmp_path: Path) -> Generator[tuple[TestClient, LocalStora
     privacy = MockPrivacyFilterClient()
 
     app = create_app()
+    app.middleware("http")(_loopback_peer)
     app.dependency_overrides[get_storage] = lambda: storage
     app.dependency_overrides[get_privacy] = lambda: privacy
 
@@ -38,10 +59,13 @@ def client_and_storage(tmp_path: Path) -> Generator[tuple[TestClient, LocalStora
     shutil.rmtree(storage_dir, ignore_errors=True)
 
 
-def _wait_for_completion(client: TestClient, job_id: str, max_iters: int = 50) -> str:
+def _wait_for_completion(
+    client: TestClient, job_id: str, token: str, max_iters: int = 50
+) -> str:
     """Poll until the job leaves the PENDING/PROCESSING state."""
+    headers = {"X-Job-Token": token}
     for _ in range(max_iters):
-        response = client.get(f"/api/v1/documents/{job_id}")
+        response = client.get(f"/api/v1/documents/{job_id}", headers=headers)
         assert response.status_code == 200
         status = response.json()["status"]
         if status in {"completed", "failed"}:
@@ -60,17 +84,12 @@ def test_three_concurrent_jobs_all_complete(
         ("c.md", b"https://example.com/x and 1234567890123456"),
     ]
 
-    job_ids: list[str] = []
+    jobs: list[tuple[str, str]] = []
     for filename, body in samples:
-        response = client.post(
-            "/api/v1/documents/",
-            files={"file": (filename, body, "text/markdown")},
-        )
-        assert response.status_code == 202
-        job_ids.append(response.json()["id"])
+        jobs.append(_upload(client, filename, body))
 
     # Wait for all three to complete.
-    statuses = [_wait_for_completion(client, job_id) for job_id in job_ids]
+    statuses = [_wait_for_completion(client, job_id, token) for job_id, token in jobs]
     assert statuses == ["completed", "completed", "completed"]
 
 
@@ -86,20 +105,15 @@ def test_concurrent_jobs_have_independent_placeholder_counters(
     client, storage = client_and_storage
     body = b"a@b.com and c@d.com and e@f.com"
 
-    job_ids: list[str] = []
+    jobs: list[tuple[str, str]] = []
     for i in range(3):
-        response = client.post(
-            "/api/v1/documents/",
-            files={"file": (f"f{i}.md", body, "text/markdown")},
-        )
-        assert response.status_code == 202
-        job_ids.append(response.json()["id"])
+        jobs.append(_upload(client, f"f{i}.md", body))
 
-    statuses = [_wait_for_completion(client, job_id) for job_id in job_ids]
+    statuses = [_wait_for_completion(client, job_id, token) for job_id, token in jobs]
     assert all(status == "completed" for status in statuses)
 
     # Each result file should have EMAIL1, EMAIL2, EMAIL3 — independent counters.
-    for job_id in job_ids:
+    for job_id, _token in jobs:
         result_path = storage.root / "jobs" / job_id / "result.md"
         text = result_path.read_text(encoding="utf-8")
         assert "<PRIVATE_EMAIL1>" in text

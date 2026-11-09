@@ -38,6 +38,7 @@ from neironir.auth.dependencies import require_admin_auth, verify_csrf
 from neironir.config import Settings
 from neironir.domain.entity_type import EntityType
 from neironir.privacy.feedback_analyzer import FeedbackAnalyzer, ProposedRule
+from neironir.privacy.regex_guard import validate_dynamic_pattern
 from neironir.privacy.rules import RuleBasedDetector
 from neironir.storage.local import atomic_write
 
@@ -278,6 +279,24 @@ async def add_manual_rule(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Unknown entity_type {entity_type!r}; expected one of: {allowed}",
         ) from exc
+
+    # ReDoS guard (spec 007, TD-004): reject nested quantifiers,
+    # backreferences and over-long patterns before compilation. The
+    # rejection reason never leaks document text — only the pattern
+    # source is inspected, and only the stable code + short detail are
+    # returned to the client.
+    rejection = validate_dynamic_pattern(pattern)
+    if rejection is not None:
+        # Stable machine-readable code ``unsafe_regex`` so clients can
+        # distinguish "unsafe" from "syntactically invalid" patterns.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "unsafe_regex",
+                "reason": rejection.reason,
+                "message": rejection.detail,
+            },
+        )
 
     try:
         re.compile(pattern)

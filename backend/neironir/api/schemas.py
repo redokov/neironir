@@ -31,6 +31,25 @@ class JobResponse(BaseModel):
     finished_at: datetime | None
     error: str | None
     processing_note: str | None = None
+    # Spec 007 TD-003: the opaque job access token is returned **only** in
+    # the creation (202) response and never echoed in status/download
+    # responses.  Clients must preserve it and send it back as the
+    # ``X-Job-Token`` header on follow-up job-scoped requests.
+    access_token: str | None = None
+
+
+class JobStatusResponse(JobResponse):
+    """Job state returned by ``GET /{job_id}`` (and friends) — no token.
+
+    Spec 007 TD-003: the opaque ``access_token`` is delivered exactly once,
+    in the creation (202) response.  Every other serialisation of a job
+    must omit the field entirely (not even as ``null``), so this schema
+    re-declares it with a field exclusion for status payloads.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    access_token: str | None = Field(default=None, exclude=True)
 
 
 class HealthResponse(BaseModel):
@@ -169,6 +188,7 @@ class ManualRuleIn(BaseModel):
 
 __all__ = [
     "JobResponse",
+    "JobStatusResponse",
     "HealthResponse",
     "DownloadResultResponse",
     "ErrorResponse",

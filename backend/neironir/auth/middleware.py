@@ -49,9 +49,11 @@ from starlette.responses import RedirectResponse, Response
 from starlette.types import ASGIApp
 
 from neironir.auth.session import (
+    JTI_PAYLOAD_KEY,
     SESSION_PAYLOAD_KEY,
     SessionExpiredError,
     SessionInvalidError,
+    is_jti_revoked,
     read_session_cookie,
 )
 
@@ -68,6 +70,11 @@ class AdminUIAuthMiddleware(BaseHTTPMiddleware):
             if settings is not None and bool(getattr(settings, "session_secret", "")):
                 payload = self._read_session(request, settings)
                 if not (payload and payload.get(SESSION_PAYLOAD_KEY)):
+                    target = f"/login?next={request.url.path}"
+                    return RedirectResponse(url=target, status_code=302)
+                # Reject revoked sessions (spec 007 FR-005 / design §4).
+                jti = payload.get(JTI_PAYLOAD_KEY)
+                if jti and is_jti_revoked(jti):
                     target = f"/login?next={request.url.path}"
                     return RedirectResponse(url=target, status_code=302)
         return await call_next(request)

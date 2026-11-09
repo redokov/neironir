@@ -22,6 +22,11 @@
   // DOM refs (populated in init)
   var $ = {};
   var currentJobId = null;
+  // T3 (spec 007): one-time opaque job access token from the upload
+  // response.  The server only stores its digest, so the raw token must
+  // be kept in runtime state and sent back as ``X-Job-Token`` on every
+  // job-scoped request (status / download / annotations / feedback).
+  var currentJobToken = null;
   // T10: upload race counter — only the most recent upload request may
   // update the UI; earlier (slower) responses are ignored.
   var uploadSeq = 0;
@@ -227,6 +232,7 @@
     // Abort any in-flight poll from a previous upload.
     if (abortController) abortController.abort();
     abortController = null;
+    currentJobToken = null;
 
     $.jobSection.hidden = false;
     $.jobFilename.textContent = file.name;
@@ -278,8 +284,16 @@
     var job = await res.json();
     if (myUpload !== uploadSeq) return; // a newer upload won the race
     currentJobId = job.id;
+    // T3: persist the one-time job access token (returned only in the
+    // creation response) so follow-up fetches can present it.
+    currentJobToken = job.access_token || null;
     $.jobStatus.textContent = statusLabel(job.status);
     startPolling();
+  }
+
+  function jobTokenHeaders() {
+    if (!currentJobToken) return {};
+    return { "X-Job-Token": currentJobToken };
   }
 
   async function poll() {
@@ -300,7 +314,10 @@
 
     var res;
     try {
-      res = await fetch("/api/v1/documents/" + myJobId, { signal: signal });
+      res = await fetch("/api/v1/documents/" + myJobId, {
+        signal: signal,
+        headers: jobTokenHeaders(),
+      });
     } catch (e) {
       if (e.name === "AbortError") return; // job was replaced, ignore
       stopPolling();
@@ -322,7 +339,14 @@
     if (job.status === "completed") {
       stopPolling();
       var ext = job.output_ext || job.source_ext;
-      $.download.href = "/api/v1/documents/" + currentJobId + "/download";
+      // T3: the download is a direct <a> navigation, so carry the
+      // one-time job token in the URL query string (?access_token=…)
+      // which the server maps onto the X-Job-Token check.
+      var downloadUrl = "/api/v1/documents/" + currentJobId + "/download";
+      if (currentJobToken) {
+        downloadUrl += "?access_token=" + encodeURIComponent(currentJobToken);
+      }
+      $.download.href = downloadUrl;
       $.download.download = "";
       $.download.setAttribute("data-ext", ext);
       $.download.hidden = false;
@@ -347,6 +371,7 @@
     abortController = null;
     closeReview();
     currentJobId = null;
+    currentJobToken = null;
     $.jobSection.hidden = true;
     $.jobFilename.textContent = "—";
     $.jobStatus.textContent = "—";
@@ -413,7 +438,9 @@
     clearApplyMessages();
 
     try {
-      var res = await fetch("/api/v1/documents/" + myJobId + "/annotations");
+      var res = await fetch("/api/v1/documents/" + myJobId + "/annotations", {
+        headers: jobTokenHeaders(),
+      });
       if (myReview !== reviewSeq || myJobId !== currentJobId) return;
       if (!res.ok) throw new Error("HTTP " + res.status);
       var data = await res.json();
@@ -431,7 +458,7 @@
   function closeReview() {
     reviewSeq++; // invalidate in-flight annotation loads (T11)
     $.reviewSection.hidden = true;
-    $.preview.innerHTML = "";
+    $.preview.textContent = "";
     reviewData = null;
     pendingActions = [];
   }
@@ -464,11 +491,38 @@
     });
     allSpans.sort(function (a, b) { return a.start - b.start || a.end - b.end; });
 
+    // T6: clamp/drop malformed spans before rendering.  The server is the
+    // source of truth for offsets, but a corrupted annotations.json or a
+    // hand-written user action can carry negative, out-of-range, reversed
+    // or overlapping spans. Nothing here may throw or build raw markup:
+    // every dropped/clamped span is handled with plain text nodes and
+    // textContent, exactly like the original code path.
+    var validSpans = [];
+    var cursor = 0;
+    allSpans.forEach(function (sp) {
+      var s = sp.start;
+      var e = sp.end;
+      // Non-integer or non-finite offsets cannot address the text.
+      if (!Number.isInteger(s) || !Number.isInteger(e)) return;
+      // Clamp into the valid text range.
+      if (e < 0 || s >= text.length) return;   // fully outside
+      if (s < 0) s = 0;
+      if (e > text.length) e = text.length;
+      // Reversed (start > end) span: swap is unsafe (entity text would
+      // mismatch), so drop it.
+      if (e < s) return;
+      // Overlapping with the previously kept span: drop the intruder.
+      // (Spans are sorted by start, so only the running cursor matters.)
+      if (s < cursor) return;
+      validSpans.push({ start: s, end: e, entity_type: sp.entity_type, text: sp.text, source: sp.source, index: sp.index, rejected: sp.rejected, added: sp.added });
+      cursor = e;
+    });
+
     // Clear the preview container and rebuild using DOM methods.
     $.preview.textContent = "";
 
     var pos = 0;
-    allSpans.forEach(function (sp) {
+    validSpans.forEach(function (sp) {
       if (sp.start > pos) {
         $.preview.appendChild(document.createTextNode(text.slice(pos, sp.start)));
       }
@@ -767,7 +821,10 @@
         "/api/v1/documents/" + currentJobId + "/apply-feedback",
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: Object.assign(
+            { "Content-Type": "application/json" },
+            jobTokenHeaders()
+          ),
           body: JSON.stringify({ actions: actions }),
         }
       );

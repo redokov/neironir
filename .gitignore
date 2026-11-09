@@ -41,3 +41,8 @@ build/
 # Privacy-filter model checkpoint (downloaded by opf on first run).
 .opf/
 nul
+
+# Agent runtime artifacts
+.pi/
+*.pid
+*.log.offset

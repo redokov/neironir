@@ -10,6 +10,14 @@ import pytest
 from neironir.domain.job import Job, JobStatus
 
 
+def _job_with_digest() -> Job:
+    return Job(
+        source_filename="note.md",
+        source_ext="md",
+        access_token_digest="a" * 64,
+    )
+
+
 def _sample_job() -> Job:
     return Job(
         source_filename="Договор.docx",
@@ -68,6 +76,16 @@ def test_to_dict_then_json_round_trip() -> None:
     assert isinstance(restored.id, UUID)
 
 
+def test_legacy_job_without_digest_deserialises_as_none() -> None:
+    """Spec 007 TD-003: pre-T3 job.json files carry no digest field at all
+    and must load with ``access_token_digest is None`` (admin-only job)."""
+    job = _sample_job()
+    data = job.to_dict()
+    data.pop("access_token_digest", None)  # simulate a legacy on-disk file
+    restored = Job.from_dict(data)
+    assert restored.access_token_digest is None
+
+
 def test_from_dict_handles_missing_finished_at_and_error() -> None:
     job = _sample_job()
     data = job.to_dict()
@@ -94,3 +112,23 @@ def test_source_ext_accepts_documented_values(value: str) -> None:
 def test_source_ext_rejects_unknown_values() -> None:
     with pytest.raises(ValueError):
         Job(source_filename="x", source_ext="pdf")  # type: ignore[arg-type]
+
+
+def test_access_token_digest_round_trips_through_json() -> None:
+    job = _job_with_digest()
+    restored = Job.from_dict(json.loads(json.dumps(job.to_dict())))
+    assert restored.access_token_digest == "a" * 64
+
+
+def test_access_token_digest_rejects_raw_token_like_values() -> None:
+    """The digest field must hold a 64-char hex digest, never a raw token."""
+    with pytest.raises(ValueError):
+        Job(source_filename="x", source_ext="md", access_token_digest="tok123")  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError):
+        Job(source_filename="x", source_ext="md", access_token_digest="zz" * 32)  # type: ignore[arg-type]
+
+
+def test_access_token_digest_none_is_valid() -> None:
+    job = _sample_job()
+    assert job.access_token_digest is None

@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 from uuid import uuid4
@@ -11,6 +12,19 @@ from neironir.domain.job import Job, JobStatus
 from neironir.main import create_app
 from neironir.privacy.client import MockPrivacyFilterClient
 from neironir.storage.local import LocalStorage
+
+# Spec 007 T3: the synthetic completed job below must carry a token digest
+# so the job-scoped apply-feedback calls can present a matching
+# ``X-Job-Token`` header (the production auth path is untouched).
+_SYNTHETIC_JOB_TOKEN = "tok-concurrent-test"
+
+
+def _synthetic_job_digest() -> str:
+    """SHA-256 hex digest of :data:`_SYNTHETIC_JOB_TOKEN` (test helper)."""
+    return hashlib.sha256(_SYNTHETIC_JOB_TOKEN.encode("utf-8")).hexdigest()
+
+
+JOB_TOKEN_HEADERS = {"X-Job-Token": _SYNTHETIC_JOB_TOKEN}
 
 
 def _make_completed_md_job(
@@ -47,11 +61,23 @@ def _make_completed_md_job(
         source_ext="md",
         created_at=now,
         finished_at=now,
+        access_token_digest=_synthetic_job_digest(),
     )
     (job_dir / "job.json").write_text(
         json.dumps(job.to_dict(), ensure_ascii=False), encoding="utf-8"
     )
     return jid
+
+
+async def _loopback_peer(request, call_next):
+    """Patch TestClient's synthetic peer to loopback (spec 007 TD-001).
+
+    The apply-feedback endpoint allows unauthenticated access only for
+    loopback peers (local UI). Without this the TestClient synthetic
+    ``testclient`` peer is classified as non-loopback and rejected with 401.
+    """
+    request.scope["client"] = ("127.0.0.1", 80)
+    return await call_next(request)
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +110,7 @@ async def test_concurrent_apply_feedback(tmp_path: Path) -> None:
     )
 
     app = create_app()
+    app.middleware("http")(_loopback_peer)
     app.dependency_overrides[get_settings] = lambda: settings_obj
     app.dependency_overrides[get_storage] = lambda: storage
     app.dependency_overrides[get_privacy] = lambda: privacy
@@ -126,6 +153,7 @@ async def test_concurrent_apply_feedback(tmp_path: Path) -> None:
                 lambda: client.post(
                     f"/api/v1/documents/{jid}/apply-feedback",
                     json=payload_a,
+                    headers=JOB_TOKEN_HEADERS,
                 )
             )
             return r.status_code
@@ -135,6 +163,7 @@ async def test_concurrent_apply_feedback(tmp_path: Path) -> None:
                 lambda: client.post(
                     f"/api/v1/documents/{jid}/apply-feedback",
                     json=payload_b,
+                    headers=JOB_TOKEN_HEADERS,
                 )
             )
             return r.status_code

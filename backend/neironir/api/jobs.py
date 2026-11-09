@@ -16,8 +16,10 @@ shape stays consistent across handlers.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
+import secrets
 from pathlib import Path, PurePath
 from typing import Literal
 from urllib.parse import quote
@@ -47,9 +49,14 @@ from neironir.api.schemas import (
     FeedbackResponse,
     FeedbackSubmit,
     JobResponse,
+    JobStatusResponse,
     ModeInfoResponse,
 )
-from neironir.auth.dependencies import require_documents_auth
+from neironir.auth.dependencies import (
+    get_session_payload,
+    require_documents_auth,
+)
+from neironir.auth.session import SESSION_PAYLOAD_KEY
 from neironir.config import Settings
 from neironir.domain.job import Job, JobStatus
 from neironir.privacy.client import PrivacyFilterClient
@@ -79,6 +86,102 @@ meta_router = APIRouter(prefix="/api/v1", tags=["meta"])
 
 
 _ALLOWED_EXTS = (".md", ".docx")
+
+
+def issue_job_access_token() -> tuple[str, str]:
+    """Issue a random opaque job access token (spec 007 TD-003).
+
+    Returns ``(raw_token, digest)`` where ``digest`` is the SHA-256 hex
+    digest of the raw token.  The raw token must be returned to the
+    client exactly once (in the creation response) and never persisted
+    or logged; only the digest is stored in ``job.json``.
+    """
+    raw_token = secrets.token_urlsafe(32)
+    digest = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+    return raw_token, digest
+
+
+def verify_job_access(
+    request: Request,
+    job: Job,
+    settings: Settings,
+) -> None:
+    """Enforce per-job access (spec 007 FR-004).
+
+    An explicit admin session bypasses the token check.  Otherwise the
+    request must carry an ``X-Job-Token`` header whose SHA-256 digest
+    equals ``job.access_token_digest`` (constant-time comparison).
+
+    Wrong token, missing token and legacy jobs without a digest all
+    raise an indistinguishable 404 — the API never reveals whether the
+    UUID exists or whether the token was simply wrong (design §8).
+    """
+    payload = get_session_payload(request, settings)
+    if payload is not None and payload.get(SESSION_PAYLOAD_KEY):
+        return  # privileged admin session — explicit bypass
+    # The frontend <a>-download navigation cannot set headers, so it
+    # passes the token as an ``access_token`` query parameter; prefer
+    # the header when both are present.
+    provided = request.headers.get("x-job-token") or request.query_params.get(
+        "access_token"
+    )
+    if not provided or not job.access_token_digest:
+        raise _http_error(
+            status.HTTP_404_NOT_FOUND,
+            code="job_not_found",
+            message="Job not found.",
+        )
+    provided_digest = hashlib.sha256(provided.encode("utf-8")).hexdigest()
+    if not secrets.compare_digest(provided_digest, job.access_token_digest):
+        raise _http_error(
+            status.HTTP_404_NOT_FOUND,
+            code="job_not_found",
+            message="Job not found.",
+        )
+
+
+def _require_job_access(
+    request: Request,
+    job_id: UUID,
+    storage: LocalStorage,
+    settings: Settings,
+) -> Job:
+    """Load a job and verify access, mapping every denial to 404.
+
+    Access denials (unknown job, wrong/missing token, legacy job for a
+    non-admin) all answer the identical 404 ``job_not_found`` body so the
+    UUID is not enumerable (spec 007 T3).  A *corrupted* ``job.json`` is a
+    different condition — the job exists but its metadata is damaged —
+    and answers 409 ``job_corrupted`` (T4 regression contract); the
+    response never reveals the stored digest or any token material.
+    """
+    try:
+        job = storage.load_job(job_id)
+    except FileNotFoundError as exc:
+        raise _http_error(
+            status.HTTP_404_NOT_FOUND,
+            code="job_not_found",
+            message="Job not found.",
+        ) from exc
+    except json.JSONDecodeError as exc:
+        # On-disk metadata is damaged: the job exists but cannot be
+        # loaded, so no token can ever be checked.  Surface a distinct,
+        # stable 409 rather than masquerading as an auth denial.
+        raise _http_error(
+            status.HTTP_409_CONFLICT,
+            code="job_corrupted",
+            message="Job metadata is corrupted; feedback cannot be accepted.",
+        ) from exc
+    except (KeyError, ValueError) as exc:
+        # Missing keys or invalid field values (e.g. a malformed digest)
+        # are the same corruption condition as an undecodable file.
+        raise _http_error(
+            status.HTTP_409_CONFLICT,
+            code="job_corrupted",
+            message="Job metadata is corrupted; feedback cannot be accepted.",
+        ) from exc
+    verify_job_access(request, job, settings)
+    return job
 
 
 # Entity types the **mock** privacy filter is able to detect.  The
@@ -165,9 +268,14 @@ async def upload(
     # 1. ``MaxBodySizeMiddleware`` rejects requests with
     #    Content-Length > max_file_size BEFORE the body is
     #    parsed (catches the common case).
-    # 2. This post-parse check (``len(content)``) catches
-    #    chunked-encoding / forged-Content-Length requests.
-    content = await file.read()
+    # 2. This bounded post-parse read catches chunked-encoding /
+    #    forged-Content-Length requests. The read itself is capped at
+    #    ``max_file_size + 1`` so the endpoint never pulls more than
+    #    one extra byte past the limit from the spool file. This does
+    #    NOT limit how much the multipart parser already spooled to
+    #    disk while reading the request stream; it only bounds what
+    #    the handler reads before rejecting oversized uploads.
+    content = await file.read(settings.max_file_size + 1)
     if len(content) > settings.max_file_size:
         raise _http_error(
             413,  # literal: starlette renamed the constant across versions
@@ -188,12 +296,17 @@ async def upload(
     source_ext = _ext_from_filename(filename)
     effective_output = _validate_output_format(source_ext, output_format)
 
+    # Spec 007 TD-003: issue the one-time opaque access token.  Only the
+    # digest is persisted; the raw token is returned in this response only.
+    raw_token, digest = issue_job_access_token()
+
     job = Job(
         id=job_id,
         status=JobStatus.PENDING,
         source_filename=filename,
         source_ext=source_ext,
         output_ext=effective_output,
+        access_token_digest=digest,
     )
     storage.save_job(job)
 
@@ -205,21 +318,32 @@ async def upload(
         privacy=privacy,
     )
 
-    return JobResponse.model_validate(job)
+    response = JobResponse.model_validate(job)
+    response.access_token = raw_token
+    return response
 
 
 @router.get(
     "/{job_id}",
-    response_model=JobResponse,
+    response_model=JobStatusResponse,
     responses={404: {"model": ErrorResponse, "description": "Job not found"}},
 )
 async def get_job(
     job_id: UUID,
+    request: Request,
     storage: LocalStorage = Depends(get_storage),
-) -> JobResponse:
-    """Return the current state of a single job."""
-    job = _load_job_or_404(storage, job_id)
-    return JobResponse.model_validate(job)
+    settings: Settings = Depends(get_settings),
+) -> JobStatusResponse:
+    """Return the current state of a single job.
+
+    Requires a valid ``X-Job-Token`` header (or an admin session); any
+    denial answers 404 so the UUID is not enumerable.
+    """
+    job = _require_job_access(request, job_id, storage, settings)
+    # The status payload must not serialise the token field at all —
+    # ``access_token`` is delivered exactly once, in the 202 creation
+    # response (spec 007 TD-003).
+    return JobStatusResponse.model_validate(job)
 
 
 @router.get(
@@ -238,12 +362,14 @@ async def get_job(
         },
         404: {"model": ErrorResponse, "description": "Job not found"},
         409: {"model": ErrorResponse, "description": "Job is not yet completed"},
+        413: {"model": ErrorResponse, "description": "JSON representation exceeds size cap"},
     },
 )
 async def download(
     job_id: UUID,
     request: Request,
     storage: LocalStorage = Depends(get_storage),
+    settings: Settings = Depends(get_settings),
 ) -> FileResponse | DownloadResultResponse:
     """Return the cleaned file for a completed job.
 
@@ -254,7 +380,7 @@ async def download(
     ``*/*`` or no header at all — returns the binary file exactly as
     before (FR-005, backward compatibility).
     """
-    job = _load_job_or_404(storage, job_id)
+    job = _require_job_access(request, job_id, storage, settings)
     if job.status != JobStatus.COMPLETED:
         raise _http_error(
             status.HTTP_409_CONFLICT,
@@ -283,6 +409,22 @@ async def download(
     media_type = _media_type_for(output_ext)
 
     if _wants_json(request.headers.get("accept", "")):
+        # T6: bound the JSON (base64) representation **before** reading
+        # the file into memory.  The on-disk byte size is a lower bound
+        # on the JSON payload (base64 inflates by ~33%), so checking
+        # ``st_size`` against the cap keeps both memory and response size
+        # bounded.  Binary downloads are unaffected by the cap.
+        file_size = result_path.stat().st_size
+        if file_size > settings.max_json_download_size:
+            raise _http_error(
+                status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                code="result_too_large",
+                message=(
+                    f"Result is {file_size} bytes, which exceeds the JSON "
+                    f"download cap of {settings.max_json_download_size} bytes; "
+                    "download the file in binary mode instead."
+                ),
+            )
         content = result_path.read_bytes()
         return DownloadResultResponse(
             job_id=job_id,
@@ -314,12 +456,14 @@ async def download(
 )
 async def get_annotations(
     job_id: UUID,
+    request: Request,
     storage: LocalStorage = Depends(get_storage),
+    settings: Settings = Depends(get_settings),
 ) -> AnnotationsResponse:
     """Return the extracted text and all detected entity spans."""
-    _ensure_job_dir_exists(storage, job_id)
+    job = _require_job_access(request, job_id, storage, settings)
 
-    text_path = storage.job_dir(job_id) / "extracted_text.txt"
+    text_path = storage.job_dir(job.id) / "extracted_text.txt"
     if not text_path.is_file():
         raise _http_error(
             status.HTTP_404_NOT_FOUND,
@@ -328,7 +472,7 @@ async def get_annotations(
         )
     text = text_path.read_text(encoding="utf-8")
 
-    annotations_path = storage.job_dir(job_id) / "annotations.json"
+    annotations_path = storage.job_dir(job.id) / "annotations.json"
     if not annotations_path.is_file():
         raise _http_error(
             status.HTTP_404_NOT_FOUND,
@@ -349,9 +493,9 @@ async def get_annotations(
         for i, ann in enumerate(raw_annotations)
     ]
 
-    feedback_path = storage.job_dir(job_id) / "feedback.json"
+    feedback_path = storage.job_dir(job.id) / "feedback.json"
     return AnnotationsResponse(
-        job_id=job_id,
+        job_id=job.id,
         text=text,
         spans=spans,
         has_feedback=feedback_path.is_file(),
@@ -368,24 +512,18 @@ async def get_annotations(
 )
 async def submit_feedback(
     job_id: UUID,
+    request: Request,
     payload: FeedbackSubmit,
     storage: LocalStorage = Depends(get_storage),
+    settings: Settings = Depends(get_settings),
 ) -> FeedbackResponse:
-    """Accept user corrections for a completed job."""
-    try:
-        job = storage.load_job(job_id)
-    except FileNotFoundError as exc:
-        raise _http_error(
-            status.HTTP_404_NOT_FOUND,
-            code="job_not_found",
-            message="Job not found.",
-        ) from exc
-    except (json.JSONDecodeError, KeyError, ValueError) as exc:
-        raise _http_error(
-            status.HTTP_409_CONFLICT,
-            code="job_corrupted",
-            message="Job metadata is corrupted; feedback cannot be accepted.",
-        ) from exc
+    """Accept user corrections for a completed job.
+
+    Access is enforced first: wrong/missing ``X-Job-Token`` (or a legacy
+    job without a digest) answers 404 ``job_not_found``, indistinguishable
+    from a nonexistent job.
+    """
+    job = _require_job_access(request, job_id, storage, settings)
     if job.status != JobStatus.COMPLETED:
         raise _http_error(
             status.HTTP_409_CONFLICT,
@@ -421,6 +559,7 @@ async def submit_feedback(
 )
 async def apply_feedback(
     job_id: UUID,
+    request: Request,
     payload: FeedbackSubmit,
     storage: LocalStorage = Depends(get_storage),
     settings: Settings = Depends(get_settings),
@@ -442,8 +581,7 @@ async def apply_feedback(
 
     Returns the counters of how many actions were applied.
     """
-    _ensure_job_dir_exists(storage, job_id)
-    job = storage.load_job(job_id)
+    job = _require_job_access(request, job_id, storage, settings)
     if job.status != JobStatus.COMPLETED:
         raise _http_error(
             status.HTTP_409_CONFLICT,
@@ -547,12 +685,14 @@ async def apply_feedback(
 )
 async def get_preview_text(
     job_id: UUID,
+    request: Request,
     storage: LocalStorage = Depends(get_storage),
+    settings: Settings = Depends(get_settings),
 ) -> dict[str, str]:
     """Return the extracted plain text for client-side highlighting."""
-    _ensure_job_dir_exists(storage, job_id)
+    job = _require_job_access(request, job_id, storage, settings)
 
-    text_path = storage.job_dir(job_id) / "extracted_text.txt"
+    text_path = storage.job_dir(job.id) / "extracted_text.txt"
     if not text_path.is_file():
         raise _http_error(
             status.HTTP_404_NOT_FOUND,
@@ -574,18 +714,6 @@ def _http_error(http_status: int, *, code: str, message: str) -> HTTPException:
         status_code=http_status,
         detail=ErrorResponse(code=code, message=message).model_dump(),
     )
-
-
-def _load_job_or_404(storage: LocalStorage, job_id: UUID) -> Job:
-    """Load a job or raise an HTTP 404 with an :class:`ErrorResponse` body."""
-    try:
-        return storage.load_job(job_id)
-    except FileNotFoundError as exc:
-        raise _http_error(
-            status.HTTP_404_NOT_FOUND,
-            code="job_not_found",
-            message="Job not found.",
-        ) from exc
 
 
 def _ext_from_filename(filename: str) -> Literal["md", "docx"]:
@@ -703,17 +831,6 @@ def _training_dataset_path(settings: Settings) -> Path:
 
     root = Path(settings.storage_dir) / "checkpoints" / CUMULATIVE_DATASET_NAME
     return root
-
-
-def _ensure_job_dir_exists(storage: LocalStorage, job_id: UUID) -> None:
-    """Raise 404 if the job directory doesn't exist."""
-    path = storage.job_dir(job_id)
-    if not path.is_dir():
-        raise _http_error(
-            status.HTTP_404_NOT_FOUND,
-            code="not_found",
-            message=f"Job {job_id} not found",
-        )
 
 
 __all__ = ["router", "meta_router"]

@@ -108,9 +108,11 @@ def _upload(
     )
 
 
-def _wait_completed(server_url: str, job_id: str) -> dict:
+def _wait_completed(server_url: str, job_id: str, token: str) -> dict:
+    """Poll the job status until it completes; the token is required (spec 007 T3)."""
+    headers = {"X-Job-Token": token}
     for _ in range(40):
-        r = httpx.get(f"{server_url}/api/v1/documents/{job_id}", timeout=2.0)
+        r = httpx.get(f"{server_url}/api/v1/documents/{job_id}", headers=headers, timeout=2.0)
         if r.status_code == 200:
             body = r.json()
             if body["status"] in {"completed", "failed"}:
@@ -139,11 +141,17 @@ def test_upload_with_output_format_md_returns_md_file(server_url: str) -> None:
     body = r.json()
     assert body["output_ext"] == "md"
     job_id = body["id"]
+    token = body.get("access_token")
+    assert token, "upload response must carry the one-time job access token"
 
-    job = _wait_completed(server_url, job_id)
+    job = _wait_completed(server_url, job_id, token)
     assert job["status"] == "completed"
 
-    dl = httpx.get(f"{server_url}/api/v1/documents/{job_id}/download", timeout=5.0)
+    dl = httpx.get(
+        f"{server_url}/api/v1/documents/{job_id}/download",
+        headers={"X-Job-Token": token},
+        timeout=5.0,
+    )
     assert dl.status_code == 200
     assert "text/markdown" in dl.headers["content-type"]
     cleaned = dl.text
@@ -160,8 +168,11 @@ def test_apply_feedback_endpoint_updates_result_file(server_url: str) -> None:
         "text/markdown",
     )
     assert r.status_code == 202
-    job_id = r.json()["id"]
-    _wait_completed(server_url, job_id)
+    uploaded = r.json()
+    job_id = uploaded["id"]
+    token = uploaded.get("access_token")
+    assert token, "upload response must carry the one-time job access token"
+    _wait_completed(server_url, job_id, token)
 
     payload = {
         "actions": [
@@ -179,6 +190,7 @@ def test_apply_feedback_endpoint_updates_result_file(server_url: str) -> None:
     r2 = httpx.post(
         f"{server_url}/api/v1/documents/{job_id}/apply-feedback",
         json=payload,
+        headers={"X-Job-Token": token},
         timeout=5.0,
     )
     assert r2.status_code == 200, r2.text
@@ -186,7 +198,11 @@ def test_apply_feedback_endpoint_updates_result_file(server_url: str) -> None:
     assert body["rejected"] == 1
 
     # Re-download to confirm the on-disk change.
-    dl = httpx.get(f"{server_url}/api/v1/documents/{job_id}/download", timeout=5.0)
+    dl = httpx.get(
+        f"{server_url}/api/v1/documents/{job_id}/download",
+        headers={"X-Job-Token": token},
+        timeout=5.0,
+    )
     assert dl.status_code == 200
     assert "user@example.com" in dl.text
     assert "<PRIVATE_EMAIL" not in dl.text
