@@ -654,11 +654,14 @@ class TestJobTokenEnforcement:
             )
             assert response.status_code == 404, (headers, response.text)
 
-    def test_download_accepts_access_token_query_param_for_link_navigation(
+    def test_download_rejects_access_token_query_param(
         self, client_and_storage: tuple[TestClient, LocalStorage]
     ) -> None:
-        """The SPA download link is a plain <a href> — the token is passed
-        as ``?access_token=...`` which the server maps onto the job check."""
+        """Spec 008 FR-001: a token passed as ``?access_token=...`` never
+        authorizes a request — the URL fallback was removed so tokens do
+        not leak into browser history, access logs or the Referer header.
+        Even a *valid* token in the query string gets the same 404 as a
+        missing one."""
         client, storage = client_and_storage
         job = _completed_tokened_job(storage)
         token = "tok-frontend"
@@ -668,4 +671,5 @@ class TestJobTokenEnforcement:
         response = client.get(
             f"/api/v1/documents/{job.id}/download?access_token={token}"
         )
-        assert response.status_code == 200
+        assert response.status_code == 404
+        assert response.json()["detail"]["code"] == "job_not_found"

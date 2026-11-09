@@ -104,6 +104,7 @@
     $.resetBtn.addEventListener("click", reset);
     $.reviewBtn.addEventListener("click", openReview);
     $.applyFeedback.addEventListener("click", applyFeedbackToFile);
+    $.download.addEventListener("click", downloadResult);
 
     // Reset the output-format checkbox when the user picks a new file
     $.outputFormatMd.addEventListener("change", function () {
@@ -296,6 +297,39 @@
     return { "X-Job-Token": currentJobToken };
   }
 
+  // Spec 008 (idea 005): download runs from script — fetch with the
+  // X-Job-Token header, then hand the blob to a temporary <a download>.
+  // The one-time job token never appears in the URL, so it cannot leak
+  // into browser history, server access logs or the Referer header.
+  async function downloadResult(e) {
+    e.preventDefault();
+    if (!currentJobId) return;
+    try {
+      var res = await fetch(
+        "/api/v1/documents/" + currentJobId + "/download",
+        { headers: jobTokenHeaders() }
+      );
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      var blob = await res.blob();
+      var disposition = res.headers.get("Content-Disposition") || "";
+      var match =
+        disposition.match(/filename\*=(?:UTF-8'')?([^;\s]+)/i) ||
+        disposition.match(/filename="?([^";]+)"?/i);
+      var ext = $.download.getAttribute("data-ext") || "md";
+      var name = match ? decodeURIComponent(match[1]) : "cleaned." + ext;
+      var objectUrl = URL.createObjectURL(blob);
+      var link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = name;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(objectUrl);
+    } catch (err) {
+      showError("Не удалось скачать файл");
+    }
+  }
+
   async function poll() {
     if (!currentJobId) {
       stopPolling();
@@ -339,15 +373,10 @@
     if (job.status === "completed") {
       stopPolling();
       var ext = job.output_ext || job.source_ext;
-      // T3: the download is a direct <a> navigation, so carry the
-      // one-time job token in the URL query string (?access_token=…)
-      // which the server maps onto the X-Job-Token check.
-      var downloadUrl = "/api/v1/documents/" + currentJobId + "/download";
-      if (currentJobToken) {
-        downloadUrl += "?access_token=" + encodeURIComponent(currentJobToken);
-      }
-      $.download.href = downloadUrl;
-      $.download.download = "";
+      // Spec 008: the download link acts as a button — the click is
+      // handled by downloadResult() (fetch + X-Job-Token header), so
+      // no token is embedded in the href.
+      $.download.href = "#";
       $.download.setAttribute("data-ext", ext);
       $.download.hidden = false;
       // T12 (#24): apply-feedback rewrites plain text only — the review UI

@@ -5,8 +5,14 @@ of task-steps, each with verification, progress recording and a transition to th
 next task.
 
 Usage (single night session):
-    uv run python scripts/night_orchestrator.py --spec
-    specs/006-code-review-fixes --tasks .ai/sdd/specs/006-code-review-fixes/tasks.md
+    uv run python scripts/night_orchestrator.py [--spec <NNN-dirname>]
+        [--heartbeat <path>] <status|verify|next|setdone|setblocked ...>
+
+Global flags (must precede the subcommand):
+    --spec <NNN-dirname>   spec directory under .ai/sdd/specs/
+                           (default: 006-code-review-fixes)
+    --heartbeat <path>     heartbeat log file
+                           (default: docs/night-006-heartbeat.log)
 
 What it does per task:
     1. read tasks.md Execution Log -> first Task not Done/blocked
@@ -33,7 +39,8 @@ from re import compile
 from pydantic import BaseModel
 
 ROOT = Path(__file__).parent.parent
-LOG = ROOT / "docs/night-006-heartbeat.log"
+DEFAULT_SPEC = "006-code-review-fixes"
+DEFAULT_HEARTBEAT = ROOT / "docs/night-006-heartbeat.log"
 HEARTBEAT_LINE = compile(
     r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}) T(?P<n>\d+) (Done|blocked) (?P<msg>.*)$"
 )
@@ -115,9 +122,36 @@ def run(cmd: str, cwd: Path) -> tuple[int, str, str]:
     return r.returncode, r.stdout, r.stderr
 
 
+def parse_global_flags(args: list[str]) -> tuple[list[str], Path, Path]:
+    """Split global flags (--spec/--heartbeat) off the subcommand args."""
+    spec_dirname = DEFAULT_SPEC
+    heartbeat = DEFAULT_HEARTBEAT
+    rest: list[str] = []
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "--spec":
+            if i + 1 >= len(args):
+                raise SystemExit("--spec requires a value")
+            spec_dirname = args[i + 1]
+            i += 2
+        elif arg == "--heartbeat":
+            if i + 1 >= len(args):
+                raise SystemExit("--heartbeat requires a value")
+            heartbeat = Path(args[i + 1])
+            i += 2
+        else:
+            rest = args[i:]
+            break
+    spec_dir = SPECS / spec_dirname
+    if not spec_dir.is_dir():
+        raise SystemExit(f"unknown spec directory: {spec_dir}")
+    return rest, spec_dir, heartbeat
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(argv or sys.argv[1:])
-    spec_dir = SPECS / "006-code-review-fixes"
+    args, spec_dir, LOG = parse_global_flags(args)
     tasks_path = spec_dir / "tasks.md"
 
     if not args or args[0] in ("-h", "--help"):

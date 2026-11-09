@@ -111,6 +111,8 @@ def verify_job_access(
     An explicit admin session bypasses the token check.  Otherwise the
     request must carry an ``X-Job-Token`` header whose SHA-256 digest
     equals ``job.access_token_digest`` (constant-time comparison).
+    The token is accepted only from the header (spec 008): a token
+    passed in the URL query string never authorizes a request.
 
     Wrong token, missing token and legacy jobs without a digest all
     raise an indistinguishable 404 — the API never reveals whether the
@@ -119,12 +121,10 @@ def verify_job_access(
     payload = get_session_payload(request, settings)
     if payload is not None and payload.get(SESSION_PAYLOAD_KEY):
         return  # privileged admin session — explicit bypass
-    # The frontend <a>-download navigation cannot set headers, so it
-    # passes the token as an ``access_token`` query parameter; prefer
-    # the header when both are present.
-    provided = request.headers.get("x-job-token") or request.query_params.get(
-        "access_token"
-    )
+    # Spec 008: the token is accepted only from the ``X-Job-Token``
+    # header — never from the URL, so it cannot leak into browser
+    # history, access logs or the Referer header.
+    provided = request.headers.get("x-job-token")
     if not provided or not job.access_token_digest:
         raise _http_error(
             status.HTTP_404_NOT_FOUND,
