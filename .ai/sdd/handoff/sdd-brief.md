@@ -1,47 +1,69 @@
-# SDD Handoff Brief: Code Review Fixes
+# SDD Handoff Brief: neironir — состояние на 2026-11-09
 
-> Status: tasks:approved (binding)
-> Readiness: Ready for implementation (ночной прогон)
-> Updated: 2026-10-28
+> Status: active
+> Readiness: все спеки 001–008 закрыты (review:done); открытых работ нет
+> Updated: 2026-11-09 (прогон спеки 008; предыдущий brief — эпоха спеки 006 —
+> superseded, см. историю в git)
 
-## Metadata
+## Project State
 
-- **Spec ID:** `006-code-review-fixes`
-- **Spec Path:** `.ai/sdd/specs/006-code-review-fixes/`
-- **Current .status:** `tasks:approved`
-- **Source Inputs:**
-  - `code-review-agent-report.md` — 31 находка (opus-5.5 ревью `wf_20b0018e3454` + кросс-ревью deepseek `wf_abc5f66aeeee`)
-  - Предыдущий спек 005 (Programmatic API) — review:done, готов к release 0.2.0 (его brief архивирован в `specs/005-programmatic-api/review.md`)
+- **Релиз v0.2.0** выпущен и запушен (тег `v0.2.0`, HEAD на момент релиза
+  `4166346`). После релиза закрыты: пробелы `docs/api.md` по контрактам 007
+  (`6cad4db`), спека 008 + её ломающее изменение (`dd31a6a`), ретроспективный
+  review спеки 006 (`ca82129`).
+- **Спеки 001–008 — все review:done.** 001–005 (реверс-документация),
+  006 (code-review fixes, T1–T17, `ff325dc`), 007 (security/privacy
+  hardening), 008 (удаление `?access_token=` query-фолбэка, идея 005).
 
-## Summary
+## Current Contracts (что считать источником истины)
 
-- **Problem:** агент-ревью подтвердило 29 дефектов (9 high — консенсус двух моделей), включая 3 утечки PII в DOCX-санитизации.
-- **Outcome:** 17 задач T1–T17 (P0→P3) + 3 deferred (ML, вне этого прогона). 2 находки опровергнуты кросс-ревью — исключены.
-- **Scope:** `backend/neironir/converters/docx.py`, `workers/feedback_applier.py`, `api/jobs.py`, `api/schemas.py`, `api/auth.py`, `storage/local.py`, `auth/api_key.py`, `admin/training.py`, `frontend/{app,admin,login}.js` + regress-тесты к каждой задаче.
-- **Out of Scope:** D1–D3 (opf: окна, spans, dead code), опровергнутые #14/#15, рефакторинг за пределами скоупа задач.
+- **Job-токен — header-only** (спека 008): `X-Job-Token` — единственный
+  способ передать токен задачи; `?access_token=` в URL не авторизует
+  (неразличимый 404). Скачивание из UI — `fetch` + `Blob`/
+  `URL.createObjectURL`. Ломающее изменение зафиксировано в
+  CHANGELOG `[Unreleased]`.
+- **Граница авторизации** (спека 007): анонимная загрузка только с
+  loopback; non-loopback — `Authorization: Bearer`; невалидный Bearer
+  даёт 401 с приоритетом над session-cookie.
+- **Digest-only токены**: в `job.json` — только SHA-256 digest; токен
+  выдаётся один раз в ответе 202.
 
-## Task Order (см. tasks.md — источник истины)
+## Ideas
 
-T1→T2→T3 (P0, docx.py; T3 после T1 — общий element map) → T4–T8 (P1, feedback) → T9–T12 (P2, frontend) → T13–T17 (P3, hardening). Прогресс фиксируется в Execution Log (tasks.md) + heartbeat `docs/night-006-heartbeat.log`.
+- **006-persistent-jti-revocation** — единственная открытая идея
+  (персистентный реестр отозванных jti; сейчас реестр in-memory на
+  процесс). Перед взятием в спеку — обсудить с пользователем.
+- 001–005 — idea:captured/adopted, реализованы соответствующими спеками.
 
-## Verification Plan
+## Deferred Limitations (осознанно отложенные)
+
+- Приёмный предел составной (chunked) загрузки — endpoint-level backstop
+  (`UploadFile.read(max+1)`); receive-level cap для multipart отсутствует
+  (ограничение публичного API Starlette).
+- Максимальная длина dynamic regex — константа в коде (200), не настройка.
+- Реестр отзывов jti — in-memory, на процесс (перезапуск затирает).
+
+## Verification (показания на 2026-11-09)
 
 ```text
-После каждой задачи:
-  uv run ruff check .          → 0
-  uv run mypy backend/neironir → 0
-  uv run pytest -m "not real_model" → all passed
-Финал: полный make check-эквивалент + git status-дифф.
+uv run ruff check .            → 0
+uv run mypy backend/neironir   → 0 (41 files)
+uv run pytest -m "not real_model" -q → 604 passed / 0 failed / 21 skipped
+make test-real (opf из .venv-opf/Scripts в PATH) → 7 passed / 0 failed
+node --check frontend/app.js && node --check frontend/admin.js → OK
 ```
 
-## Night Run
+## Tooling Notes
 
-- Рецепт и промт: `.ai/sdd/specs/006-code-review-fixes/night-run.md`
-- Взвод: `arm_cont_after_reset.py "$PI_SESSION_FILE" --repeat 8 --ttl 20`
-- Правила: 2-попытки → blocked; «продолжи» = норма; завершение = итог + снятие флага.
+- Оркестратор `scripts/night_orchestrator.py` параметризован:
+  `--spec <NNN-dirname> --heartbeat <path>` (умолчания — 006/night-006).
+- opf-бинарь: `.venv-opf/Scripts/opf.exe` (на PATH его нет — добавлять
+  при запуске real-гейтов). `make` в bash-окружении недоступен —
+  эквивалент: `NEIRONIR_RUN_REAL_MODEL_TESTS=1 uv run pytest -m real_model`.
 
-## Handoff Readiness
+## Recommended Next Action
 
-- **Ready for Implementation:** yes
-- **Blockers:** N/A
-- **Recommended Next Action:** ночной прогон по night-run.md; утром — morning-check (arms.log + heartbeat + Execution Log)
+- Обсудить с пользователем идею 006 (персистентный jti-реестр) —
+  единственный кандидат на спеку 009.
+- Следующий релиз (0.3.0): включить ломающее изменение 008 из
+  `[Unreleased]`.

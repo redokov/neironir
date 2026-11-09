@@ -57,7 +57,7 @@
 
 ## Handoff
 
-- `.ai/sdd/handoff/sdd-brief.md`: **active** — обзорное состояние после review спеки 005 (Programmatic (M2M) API, Approved with follow-ups).
+- `.ai/sdd/handoff/sdd-brief.md`: **active** — обзорное состояние после спеки 008 (все спеки 001–008 закрыты, единственная открытая идея — 006-persistent-jti-revocation).
 
 ## Next Actions
 
