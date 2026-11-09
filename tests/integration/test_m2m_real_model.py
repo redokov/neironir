@@ -111,15 +111,20 @@ def client() -> Generator[TestClient, None, None]:
     shutil.rmtree(storage_dir, ignore_errors=True)
 
 
-def _wait_for_completion(test_client: TestClient, job_id: str, max_wait_s: float = 600.0) -> dict:
-    """Poll the job endpoint (with the M2M key) until a terminal state.
+def _wait_for_completion(
+    test_client: TestClient, job_id: str, token: str, max_wait_s: float = 600.0
+) -> dict:
+    """Poll the job endpoint (M2M key + job token) until a terminal state.
 
     The real OPF model takes seconds per document; the docs recommend
-    a poll interval >= 2 s, so we honour it here.
+    a poll interval >= 2 s, so we honour it here. Job-scoped requests
+    must carry the X-Job-Token header alongside the Bearer key
+    (spec 007 T3).
     """
+    headers = {**AUTH, "X-Job-Token": token}
     deadline = time.monotonic() + max_wait_s
     while time.monotonic() < deadline:
-        r = test_client.get(f"/api/v1/documents/{job_id}", headers=AUTH)
+        r = test_client.get(f"/api/v1/documents/{job_id}", headers=headers)
         assert r.status_code == 200, r.text
         body = r.json()
         if body["status"] in {"completed", "failed"}:
@@ -149,14 +154,19 @@ class TestM2MRealModelFlow:
                 headers=AUTH,
             )
         assert upload.status_code == 202, upload.text
-        job_id = upload.json()["id"]
+        upload_body = upload.json()
+        job_id = upload_body["id"]
+        # The raw job token is returned only in this 202 response (spec 007 T3).
+        token = upload_body["access_token"]
 
         # --- Poll until completed ------------------------------------------
-        job = _wait_for_completion(client, job_id)
+        job = _wait_for_completion(client, job_id, token)
         assert job["status"] == "completed", job
 
         # --- Binary download ----------------------------------------------
-        binary = client.get(f"/api/v1/documents/{job_id}/download", headers=AUTH)
+        binary = client.get(
+            f"/api/v1/documents/{job_id}/download", headers={**AUTH, "X-Job-Token": token}
+        )
         assert binary.status_code == 200, binary.text
         assert "wordprocessingml.document" in binary.headers["content-type"]
         assert 'filename="' in binary.headers.get("content-disposition", "")
@@ -165,7 +175,7 @@ class TestM2MRealModelFlow:
         # --- JSON (base64) download ---------------------------------------
         json_resp = client.get(
             f"/api/v1/documents/{job_id}/download",
-            headers={**AUTH, "Accept": "application/json"},
+            headers={**AUTH, "X-Job-Token": token, "Accept": "application/json"},
         )
         assert json_resp.status_code == 200, json_resp.text
         body = json_resp.json()

@@ -47,17 +47,18 @@ pytestmark = [
 ]
 
 
-def _wait_for_completion(client, job_id, max_wait_s: float = 60.0) -> dict:
-    """Poll the job endpoint until the pipeline is finished or fails.
+def _wait_for_completion(client, job_id, token: str, max_wait_s: float = 60.0) -> dict:
+    """Poll the job endpoint (with its X-Job-Token) until it terminates.
 
     The real OPF model takes a few seconds per document so the timeout
     is generous; CI machines without GPU acceleration may need even
-    more.
+    more. Job-scoped requests must carry the job token (spec 007 T3).
     """
+    headers = {"X-Job-Token": token}
     deadline = time.monotonic() + max_wait_s
     while time.monotonic() < deadline:
-        r = client.get(f"/api/v1/documents/{job_id}")
-        assert r.status_code == 200
+        r = client.get(f"/api/v1/documents/{job_id}", headers=headers)
+        assert r.status_code == 200, r.text
         body = r.json()
         if body["status"] in {"completed", "failed"}:
             return body
@@ -93,6 +94,16 @@ def real_client_and_storage() -> Generator[tuple, None, None]:
     )
 
     app = create_app()
+
+    # TestClient's default peer address ("testclient") is not loopback, so
+    # anonymous (headerless) uploads would fail the spec 007 FR-001/FR-002
+    # boundary with 401. Present the fixture as a local browser client —
+    # the same trick as ``test_m2m_api._make_client``.
+    @app.middleware("http")
+    async def _loopback_peer(request, call_next):
+        request.scope["client"] = ("127.0.0.1", 80)
+        return await call_next(request)
+
     app.dependency_overrides[get_settings] = lambda: real_settings
     app.dependency_overrides[get_storage] = lambda: LocalStorage(storage_dir)
     app.dependency_overrides[get_privacy] = lambda: privacy
@@ -128,10 +139,13 @@ class TestRealModelDetection:
             files={"file": ("contract.md", text.encode("utf-8"), "text/markdown")},
         )
         assert r.status_code == 202
-        job = _wait_for_completion(client, r.json()["id"])
+        token = r.json()["access_token"]
+        job = _wait_for_completion(client, r.json()["id"], token)
         assert job["status"] == "completed", job
 
-        ann = client.get(f"/api/v1/documents/{job['id']}/annotations").json()
+        ann = client.get(
+            f"/api/v1/documents/{job['id']}/annotations", headers={"X-Job-Token": token}
+        ).json()
         entity_types = {span["entity_type"] for span in ann["spans"]}
         # The mock does not detect person names — the real model must.
         assert "private_person" in entity_types, (
@@ -147,10 +161,13 @@ class TestRealModelDetection:
             "/api/v1/documents/",
             files={"file": ("contract.md", text.encode("utf-8"), "text/markdown")},
         )
-        job = _wait_for_completion(client, r.json()["id"])
+        token = r.json()["access_token"]
+        job = _wait_for_completion(client, r.json()["id"], token)
         assert job["status"] == "completed"
 
-        ann = client.get(f"/api/v1/documents/{job['id']}/annotations").json()
+        ann = client.get(
+            f"/api/v1/documents/{job['id']}/annotations", headers={"X-Job-Token": token}
+        ).json()
         entity_types = {span["entity_type"] for span in ann["spans"]}
         assert "private_address" in entity_types, (
             "real OPF model failed to detect the address — see "
@@ -164,10 +181,13 @@ class TestRealModelDetection:
             "/api/v1/documents/",
             files={"file": ("contract.md", text.encode("utf-8"), "text/markdown")},
         )
-        job = _wait_for_completion(client, r.json()["id"])
+        token = r.json()["access_token"]
+        job = _wait_for_completion(client, r.json()["id"], token)
         assert job["status"] == "completed"
 
-        ann = client.get(f"/api/v1/documents/{job['id']}/annotations").json()
+        ann = client.get(
+            f"/api/v1/documents/{job['id']}/annotations", headers={"X-Job-Token": token}
+        ).json()
         entity_types = {span["entity_type"] for span in ann["spans"]}
         assert "private_email" in entity_types
         assert "private_phone" in entity_types
@@ -202,11 +222,14 @@ class TestRealModelDocxToMarkdown:
                 data={"output_format": "md"},
             )
         assert r.status_code == 202
-        job = _wait_for_completion(client, r.json()["id"], max_wait_s=120.0)
+        token = r.json()["access_token"]
+        job = _wait_for_completion(client, r.json()["id"], token, max_wait_s=120.0)
         assert job["status"] == "completed", job
 
         # The download is a markdown file with placeholders.
-        dl = client.get(f"/api/v1/documents/{job['id']}/download")
+        dl = client.get(
+            f"/api/v1/documents/{job['id']}/download", headers={"X-Job-Token": token}
+        )
         assert dl.status_code == 200
         assert "text/markdown" in dl.headers["content-type"]
         body = dl.text
@@ -236,8 +259,11 @@ class TestRealModelApplyFeedback:
             "/api/v1/documents/",
             files={"file": ("contract.md", text.encode("utf-8"), "text/markdown")},
         )
-        job = _wait_for_completion(client, r.json()["id"])
-        ann = client.get(f"/api/v1/documents/{job['id']}/annotations").json()
+        token = r.json()["access_token"]
+        job = _wait_for_completion(client, r.json()["id"], token)
+        ann = client.get(
+            f"/api/v1/documents/{job['id']}/annotations", headers={"X-Job-Token": token}
+        ).json()
 
         # Find the index of the first person annotation.
         person_idx = next(
@@ -261,6 +287,7 @@ class TestRealModelApplyFeedback:
         r2 = client.post(
             f"/api/v1/documents/{job['id']}/apply-feedback",
             json=payload,
+            headers={"X-Job-Token": token},
         )
         assert r2.status_code == 200
         body = r2.json()
@@ -268,7 +295,9 @@ class TestRealModelApplyFeedback:
 
         # The downloaded result should no longer contain the rejected
         # span as a placeholder — the original text must be back.
-        dl = client.get(f"/api/v1/documents/{job['id']}/download")
+        dl = client.get(
+            f"/api/v1/documents/{job['id']}/download", headers={"X-Job-Token": token}
+        )
         result_text = dl.text
         # Find the rejected text and check it's not in placeholder form.
         original = ann["spans"][person_idx]["text"]
